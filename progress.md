@@ -1,16 +1,18 @@
 # 筆記工程進度
 
-> 任務定義見 [BRIEF.md](BRIEF.md)，執行規劃見 [PLAN.md](PLAN.md)。基準：AOSP `android-17.0.0_r1`；kernel：GKI `kernel/common` 分支 `android17-6.18`（Linux 6.18，commit `028363aa3cfa`）。
+> 任務定義見 [BRIEF.md](BRIEF.md)，執行規劃見 [PLAN.md](PLAN.md)。基準：AOSP `android-17.0.0_r1`；kernel：GKI `kernel/common` 分支 `android17-6.18`（Linux 6.18，5.1 基準 `028363aa3cfa`，5.4–5.10 基準 `1e0de07`）。
 > 每章節奏：**檢查點 1 大綱** → **檢查點 2 第一節** → **全章完成**。每個檢查點都要等使用者確認才往下推進。
 
 ## 目前狀態
 
-- **現在**：第 5 章檢查點 1 大綱已確認；**檢查點 2 第一節試寫**（[ch05-binder/5.1-driver.md](ch05-binder/5.1-driver.md)）已完成，等待使用者確認深度、篇幅與格式後再續寫 5.2–5.10。
-- **下一步**：依使用者對 5.1 的校準意見調整（如需要拆檔或增減細節），接著依序撰寫 5.2–5.10。
+- **現在**：**第 5 章（Binder）與第 2 章（AIDL HAL）皆已全章完成**；最新完成的第 2 章（[ch02-aidl-hal/00-outline.md](ch02-aidl-hal/00-outline.md) 與 `2.1`–`2.5` 共 5 節、6,007 行、109 段程式碼）全部通過逐行原始碼比對驗證，0 筆不符。
+- **下一步**：進入順位第 3 的**第 4 章 `logd + liblog`**（原書第 4 章〈Logger 日誌系統〉改寫為現代 `logd` + `liblog`），先產出檢查點 1 大綱 `ch04-logd/00-outline.md`。
 - **待決事項**：
-  - [x] 確認 17 對應的 GKI kernel 分支名稱：已確認為 `kernel/common` 的 `android17-6.18`（commit `028363aa3cfa`）
+  - [x] 確認 17 對應的 GKI kernel 分支名稱：已確認為 `kernel/common` 的 `android17-6.18`（`028363aa3cfa` / `1e0de07`）
   - [x] 確認 `ch05-binder/00-outline.md`（檢查點 1 通過）
-  - [ ] 確認 `ch05-binder/5.1-driver.md` 的深度、篇幅與格式（檢查點 2）
+  - [x] 確認 `ch05-binder/5.1-driver.md` 的深度、篇幅與格式（檢查點 2 通過）
+  - [x] 完成第 5 章全章 `5.1`–`5.10`
+  - [x] 完成第 2 章（AIDL HAL）大綱與全章 `2.1`–`2.5`
 
 ## 章節進度
 
@@ -18,8 +20,8 @@
 
 | 順序 | 原書章 | 新章名 / 主題 | 處理方式 | 狀態 |
 |---|---|---|---|---|
-| 1 | 第 5 章 Binder 進程間通信系統 | Binder（driver、libbinder、servicemanager、AIDL） | 試寫章，重追呼叫鏈（5.1 完成，待檢查點 2 確認） | ✍️ |
-| 2 | 第 2 章 硬體抽象層 | AIDL HAL | 改寫成新機制 | ⬜ |
+| 1 | 第 5 章 Binder 進程間通信系統 | Binder（driver、libbinder、servicemanager、AIDL） | 試寫章，重追呼叫鏈（5.1–5.10 全章完成） | ✅ |
+| 2 | 第 2 章 硬體抽象層 | AIDL HAL | 改寫成新機制（2.1–2.5 全章完成） | ✅ |
 | 3 | 第 4 章 Logger 日誌系統 | logd + liblog | 改寫成新機制 | ⬜ |
 | 4 | 第 6 章 Ashmem 匿名共享記憶體 | memfd / 現行 ashmem | 改寫成新機制 | ⬜ |
 | 5 | 第 3 章 智能指標 | 智能指標（RefBase / sp / wp） | 重追 | ⬜ |
@@ -52,3 +54,7 @@
 - **2026-11-24**：建立 `PLAN.md`（工作流程、原始碼取得策略、第 5 章計畫）。其中的路徑和 kernel 分支尚未驗證。
 - **2026-11-24**：完成第 5 章檢查點 1：驗證 `android-17.0.0_r1` manifest 與 GKI `kernel/common` `android17-6.18` 分支，淺 clone 相關專案至 `src/`，並完成 `ch05-binder/00-outline.md`（含原書 → 17 對照表），等待確認。
 - **2026-11-24**：檢查點 1 通過；完成第 5 章檢查點 2 試寫節 `ch05-binder/5.1-driver.md`（涵蓋 5.1.1–5.1.5、三級鎖、binderfs、`binder_alloc` 無核心 VA 映射與 LRU shrinker，所有程式碼片段均已對照本機 clone 逐行驗證），等待使用者校準深度與篇幅。
+- **2026-11-24**：檢查點 2 通過；完成第 5 章 `ch05-binder/5.2-libbinder.md`（涵蓋 `IBinder`/`IInterface`/`BnInterface`/`BpInterface`、`IMPLEMENT_META_INTERFACE` 白名單、`BBinder`（`PackedData` + `Extras`）、`BpRefBase`/`BpBinder`（`PrivateAccessor`、`variant<BinderHandle, RpcHandle>`、`Stability::check`、per-UID 水位）、`ProcessState`（`pthread_atfork`、`mHandleToObject`）、`IPCThreadState`（TLS、`transact`/`waitForResponse`/`talkWithDriver`/`executeCommand`）、`Parcel` 物件扁平化與 `libbinder_ndk`/`libbinder_rs`/RPC Binder 生態定位，並逐行比對原始碼驗證完畢）。
+- **2026-11-24**：完成第 5 章 `ch05-binder/5.3-aidl-example.md`（以 `ICppJavaTests.aidl`、`generate_cpp.cpp` 與官方 golden output 解析 `aidl --lang=cpp` 四檔生成碼、`binder::Status`、`DO_NOT_DIRECTLY_USE_ME_IMPLEMENT_META_INTERFACE`、`TransactionCodeData`、`enforceNoDataAvail`、`Delegator`，並對照 `aidl_test_service.cpp`、`main_gpuservice.cpp`、`aidl_test_client` 與 NDK `codelab/client/testClient.cpp`，逐行比對驗證 0 筆不符）。
+- **2026-11-24**：完成第 5 章剩餘全部小節 `5.4-refcount.md`、`5.5-death-notification.md`、`5.6-servicemanager-start.md`、`5.7-servicemanager-proxy.md`、`5.8-service-start.md`、`5.9-service-proxy.md`、`5.10-java-interface.md`；第 5 章全章 10 節（15,291 行、311 段程式碼）全數通過逐行原始碼驗證（0 筆不符、0 筆 `TODO: 未確認`、10 張 Mermaid 時序圖全數通過語法檢查），狀態推進至 ✅ 全章完成。
+- **2026-11-24**：完成第 2 章〈AIDL HAL〉全章：`ch02-aidl-hal/00-outline.md` 與 `2.1-kernel-driver.md`–`2.5-app-client.md` 共 5 節（6,007 行、109 段程式碼、6 張 Mermaid 圖），以 `android.hardware.light`（GKI LED 子系統 + Rust HAL + VTS + Java 零 JNI `LightsService` + `SystemLightsManager`）為主線並對照 `android.hardware.vibrator`（C++ `libbinder_ndk` HAL + Vendor APEX + JNI `VibratorController`）與傳統 `libhardware`，全數通過逐行原始碼驗證（0 筆不符、0 筆 `TODO: 未確認`），狀態推進至 ✅ 全章完成。

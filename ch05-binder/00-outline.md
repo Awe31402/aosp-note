@@ -2,9 +2,9 @@
 
 > **原書對應**：第 5 章〈Binder 进程间通信系统〉（p.152–334）
 > **AOSP 基準**：`refs/tags/android-17.0.0_r1`
-> **Kernel 基準**：GKI `kernel/common` 分支 `android17-6.18`（Linux 6.18，固定檢出 commit `028363aa3cfa`）
+> **Kernel 基準**：GKI `kernel/common` 分支 `android17-6.18`（Linux 6.18，5.1 基準 `028363aa3cfa`，5.4–5.10 基準 `1e0de07`）
 > **撰寫日期**：2026-11-24
-> **狀態**：檢查點 1 已確認 → 檢查點 2（`5.1-driver.md`）已完成，待確認深度與格式
+> **狀態**：✅ 全章完成（`5.1-driver.md`–`5.10-java-interface.md` 共 10 節，全數完成並通過逐行原始碼驗證）
 
 ---
 
