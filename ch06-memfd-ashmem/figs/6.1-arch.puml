@@ -1,0 +1,42 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam PackageBorderColor #64748B
+skinparam RectangleBackgroundColor #FFFFFF
+skinparam RectangleBorderColor #334155
+skinparam ArrowColor #1E293B
+
+package "使用者空間 (Android 17)" #EFF6FF {
+  rectangle "Android 17 App (targetSdk >= 37)\nlibcutils::ashmem_create_region() -> use_memfd()==true" as APP17
+  rectangle "舊版 App / 相容路徑\nopen(/dev/ashmem<boot_id>) + ioctl(ASHMEM_*)" as APPOLD
+  rectangle "ueventd (system/core/init/devices.cpp)\n複製 /dev/ashmem -> /dev/ashmem<boot_id>" as UEVENTD
+}
+
+package "Linux 6.18 GKI 核心：雙軌匿名共享記憶體子系統" #F0FDF4 {
+  package "現代主線路徑：memfd (mm/memfd.c)" #FFFFFF {
+    rectangle "SYSCALL memfd_create(name, MFD_CLOEXEC | MFD_ALLOW_SEALING)\n+ ftruncate() + fcntl(F_ADD_SEALS)" as MEMFD
+    rectangle "SELinux LSM (security/selinux/hooks.c)\nselinux_inode_init_security_anon -> SECCLASS_MEMFD_FILE" as SELINUX
+  }
+
+  package "相容驅動路徑：Rust Ashmem (drivers/staging/android/)" #FFF7ED {
+    rectangle "ashmem.rs (AshmemModule / AshmemMisc)\nMiscDevice /dev/ashmem + 3 個 AshmemToggleMisc" as ASHMEM
+    rectangle "ashmem_range.rs + ashmem_shrinker.rs\nArea::pin/unpin + ASHMEM_MUTEX + LRU Shrinker" as RANGE
+    rectangle "ashmem_memfd_ioctl() 核心相容墊片\n將對 memfd 的 ASHMEM_* ioctl 轉譯為 memfd_fcntl / i_size_read" as COMPAT
+  }
+
+  rectangle "共同底層：tmpfs / shmem (mm/shmem.c)\nshmem_file_setup() / shmem_mmap() / fallocate(PUNCH_HOLE)\n同一 struct inode + address_space (struct folio 頁快取)" as SHMEM
+}
+
+APP17 --> MEMFD : memfd_create / fcntl(F_ADD_SEALS)
+APPOLD --> ASHMEM : open / ioctl / mmap
+UEVENTD ..> ASHMEM : 監聽 uevent 複製節點
+MEMFD --> SELINUX : memfd_class 權限核驗
+MEMFD --> SHMEM : shmem_file_setup() + SHMEM_FL_MEMFD
+ASHMEM --> SHMEM : shmem.rs::ShmemFile::new()
+ASHMEM --> RANGE : pin / unpin / shrinker 回收
+RANGE --> SHMEM : ShmemFile::punch_hole()
+SHMEM ..> COMPAT : 舊程式對 memfd 執行 ASHMEM_* ioctl
+@enduml

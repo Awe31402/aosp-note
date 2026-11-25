@@ -1,0 +1,117 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam ClassBackgroundColor #F8FAFC
+skinparam ClassBorderColor #334155
+skinparam ClassHeaderBackgroundColor #E2E8F0
+skinparam ArrowColor #1E293B
+
+class IInterface <<libbinder>>
+class "BnInterface<IMemoryHeap>" as BnIH
+class "BpInterface<IMemoryHeap>" as BpIH
+class "BnInterface<IMemory>" as BnIM
+class "BpInterface<IMemory>" as BpIM
+
+interface IMemoryHeap {
+  {abstract} +getHeapID() : int
+  {abstract} +getBase() : void*
+  {abstract} +getSize() : size_t
+  {abstract} +getFlags() : uint32_t
+  {abstract} +getOffset() : off_t
+}
+
+class BnMemoryHeap {
+  +onTransact(code=HEAP_ID, ...) : status_t
+}
+
+class MemoryHeapBase {
+  -mFD : int
+  -mSize : size_t
+  -mBase : void*
+  -mFlags : uint32_t
+  -mDevice : const char*
+  -mNeedUnmap : bool
+  -mOffset : off_t
+  +MemoryHeapBase(size, flags, name)
+  +dispose() : void
+  #mapfd(fd, writeableByCaller, size, offset) : status_t
+}
+
+class BpMemoryHeap {
+  -mHeapId : atomic<int32_t>
+  -mBase : void*
+  -mSize : size_t
+  -mFlags : uint32_t
+  -mOffset : off_t
+  -mRealHeap : bool
+  -assertMapped() : void
+  -assertReallyMapped() : void
+}
+
+class HeapCache <<DeathRecipient>> {
+  -mHeapCache : map<wp<IBinder>, heap_info_t>
+  +find_heap(binder) : sp<IMemoryHeap>
+  +free_heap(binder) : void
+  +get_heap(binder) : sp<IMemoryHeap>
+  +binderDied(who) : void
+}
+
+interface IMemory {
+  {abstract} +getMemory(offset, size) : sp<IMemoryHeap>
+  +unsecurePointer() : void*
+  +fastPointer(binder, offset) : void*
+}
+
+class BnMemory {
+  +onTransact(code=GET_MEMORY, ...) : status_t
+}
+
+class MemoryBase {
+  -mSize : size_t
+  -mOffset : ssize_t
+  -mHeap : sp<IMemoryHeap>
+  +getMemory(offset, size) : sp<IMemoryHeap>
+}
+
+class BpMemory {
+  -mHeap : sp<IMemoryHeap>
+  -mOffset : ssize_t
+  -mSize : size_t
+  +getMemory(offset, size) : sp<IMemoryHeap>
+}
+
+class MemoryDealer {
+  -mHeap : sp<IMemoryHeap>
+  -mAllocator : SimpleBestFitAllocator*
+  +allocate(size) : sp<IMemory>
+  +deallocate(offset) : void
+}
+
+class Allocation {
+  -mDealer : sp<MemoryDealer>
+  +~Allocation()
+}
+
+IInterface <|-- IMemoryHeap
+IInterface <|-- IMemory
+IMemoryHeap <|-- BnIH
+IMemoryHeap <|-- BpIH
+BnIH <|-- BnMemoryHeap
+BpIH <|-- BpMemoryHeap
+BnMemoryHeap <|-- MemoryHeapBase
+IMemory <|-- BnIM
+IMemory <|-- BpIM
+BnIM <|-- BnMemory
+BpIM <|-- BpMemory
+BnMemory <|-- MemoryBase
+MemoryBase <|-- Allocation
+MemoryBase o--> IMemoryHeap : mHeap
+BpMemory o--> IMemoryHeap : mHeap
+BpMemoryHeap ..> HeapCache : gHeapCache 去重快取
+MemoryDealer *--> MemoryHeapBase : mHeap
+MemoryDealer ..> Allocation : allocate()
+Allocation --> MemoryDealer : mDealer (~Allocation 呼叫 madvise + deallocate)
+@enduml

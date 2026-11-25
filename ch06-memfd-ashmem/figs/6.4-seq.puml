@@ -1,0 +1,59 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "發送端 Java\n(NotificationRankingUpdate)" as Sender
+participant "SharedMemory\n(Java)" as SM
+participant "android_os_\nSharedMemory.cpp" as JNI
+participant "libcutils\n(ashmem-dev.cpp)" as Cutils
+participant "VMRuntime /\nOs / Cleaner" as RT
+participant "Binder Parcel\nIPC" as Parcel
+participant "接收端 Java\n(NotificationListener)" as Recv
+
+group #EFF6FF 階段一：建立 SharedMemory 與註冊原生記憶體壓力
+  Sender -> SM : SharedMemory.create(name, mapSize)
+  SM -> JNI : nCreate(name, size) -> SharedMemory_nCreate()
+  JNI -> Cutils : ashmem_create_region(name, size) (API 37+ 走 memfd)
+  Cutils --> JNI : fd
+  JNI --> SM : jniCreateFileDescriptor(env, fd)
+  SM -> JNI : nGetSize(fd) -> ashmem_valid() + ashmem_get_size_region()
+  SM -> RT : new MemoryRegistration(mSize) -> registerNativeAllocation(pageAlignedSize)
+  SM -> RT : Cleaner.create(mFileDescriptor, new Closer(fd, mMemoryRegistration))
+end
+
+group #F0FDF4 階段二：寫入資料、鎖定唯讀與經 Parcel 跨行程傳送
+  Sender -> SM : mRankingMapFd.mapReadWrite() -> map(PROT_READ | PROT_WRITE, 0, mSize)
+  SM -> RT : Os.mmap(0, length, prot, MAP_SHARED, mFileDescriptor, offset)
+  SM -> RT : mMemoryRegistration.acquire() -> new DirectByteBuffer(..., Unmapper, readOnly=false)
+  Sender -> Sender : mapParcel.marshall(buffer) 寫入序列化資料
+  Sender -> SM : setProtect(OsConstants.PROT_READ) -> nSetProt()
+  SM -> JNI : SharedMemory_nSetProt() -> ashmem_set_prot_region(fd, PROT_READ)
+  JNI -> Cutils : fcntl(F_ADD_SEALS, F_SEAL_FUTURE_WRITE) (或 ASHMEM_SET_PROT_MASK)
+  Sender -> Parcel : out.writeParcelable(mRankingMapFd, flags) -> SharedMemory.writeToParcel()
+  Parcel -> Parcel : dest.writeFileDescriptor(mFileDescriptor) (BINDER_TYPE_FD)
+  Sender -> SM : SharedMemory.unmap(buffer) + mRankingMapFd.close() (釋放本端映射與 fd)
+end
+
+group #FFF7ED 階段三：接收端反序列化、唯讀映射與自動回收
+  Parcel --> Recv : in.readParcelable(SharedMemory.class) -> CREATOR.createFromParcel()
+  Recv -> SM : source.readRawFileDescriptor() -> new SharedMemory(descriptor)
+  Recv -> SM : mRankingMapFd.mapReadOnly() -> Os.mmap(PROT_READ, MAP_SHARED)
+  Recv -> Recv : buffer.get(payload) -> mapParcel.unmarshall() 還原物件
+  Recv -> SM : SharedMemory.unmap(buffer) -> NioUtils.freeDirectBuffer() -> Unmapper.run() (Os.munmap + release)
+  Recv -> SM : mRankingMapFd.close() -> mCleaner.clean() -> Closer.run() (Os.close + release -> registerNativeFree)
+end
+@enduml

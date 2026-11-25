@@ -1,0 +1,73 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Native / NDK\n呼叫端" as Caller
+participant "libandroid\n(sharedmem.cpp)" as NDK
+participant "libcutils\n(ashmem-dev.cpp)" as Cutils
+participant "Linux 6.18\nmm/memfd.c" as Memfd
+participant "Rust Ashmem\n(/dev/ashmem<boot_id>)" as Ashmem
+
+group #EFF6FF 階段一：建立匿名共享記憶體與 use_memfd() 雙後端決策
+  Caller -> NDK : ASharedMemory_create(name, size)
+  NDK -> Cutils : ashmem_create_region(name, size)
+  Cutils -> Cutils : use_memfd() 單次判定 (sys.use_memfd 或 memfd_class + vendor_api>=202604 + targetSdk>=37)
+  alt use_memfd() == true (Android 17 預設)
+    Cutils -> Memfd : ~__memfd_create_region(): syscall(~__NR_memfd_create, name, MFD_CLOEXEC | MFD_ALLOW_SEALING)
+    Cutils -> Memfd : ftruncate(fd, size)
+    Cutils -> Memfd : fcntl(fd, F_ADD_SEALS, F_SEAL_GROW | F_SEAL_SHRINK)
+    Memfd --> Cutils : 回傳 memfd fd
+  else use_memfd() == false (舊版 App / 相容路徑)
+    Cutils -> Cutils : get_ashmem_device_path() 讀 /proc/sys/kernel/random/boot_id
+    Cutils -> Ashmem : ~__ashmem_open(): stat + open("/dev/ashmem<boot_id>", O_RDWR | O_CLOEXEC)
+    Cutils -> Ashmem : ioctl(ASHMEM_SET_NAME) + ioctl(ASHMEM_SET_SIZE)
+    Ashmem --> Cutils : 回傳 ashmem fd
+  end
+  Cutils --> NDK : fd
+  NDK --> Caller : fd
+end
+
+group #F0FDF4 階段二：權限縮限 (setProt) 與大小查詢 (getSize)
+  Caller -> NDK : ASharedMemory_setProt(fd, PROT_READ)
+  NDK -> Cutils : ashmem_set_prot_region(fd, PROT_READ)
+  Cutils -> Cutils : is_memfd_fd(fd): readlink("/proc/self/fd/<fd>") 檢查 "/memfd:" 前綴
+  alt is_memfd_fd(fd) == true
+    Cutils -> Memfd : memfd_set_prot_region(): fcntl(F_GET_SEALS) + fcntl(F_ADD_SEALS, F_SEAL_FUTURE_WRITE)
+  else ashmem fd
+    Cutils -> Ashmem : ioctl(ASHMEM_SET_PROT_MASK, PROT_READ) + ~__ashmem_check_failure()
+  end
+  Caller -> NDK : ASharedMemory_getSize(fd)
+  NDK -> Cutils : ashmem_valid(fd) -> ashmem_get_size_region(fd)
+  alt is_memfd_fd(fd) == true
+    Cutils -> Memfd : fstat(fd, &sb) -> sb.st_size
+  else ashmem fd
+    Cutils -> Ashmem : ioctl(ASHMEM_GET_SIZE, NULL)
+  end
+end
+
+group #FFF7ED 階段三：已棄用之 pin / unpin 與 Java 互操作
+  Caller -> Cutils : ashmem_pin_region / ashmem_unpin_region -> do_pin()
+  Cutils -> Cutils : 首次印出 ALOGE("Pinning is deprecated since Android Q...")
+  alt is_memfd_fd(fd) == true
+    Cutils --> Caller : 直接返回 0 (no-op，等價 ASHMEM_NOT_PURGED)
+  else ashmem fd
+    Cutils -> Ashmem : ioctl(ASHMEM_PIN / ASHMEM_UNPIN, &pin)
+  end
+  Caller -> NDK : ASharedMemory_dupFromJava(env, javaSharedMemory)
+  NDK -> NDK : CallIntMethod(SharedMemory#getFd) + fcntl(fd, F_DUPFD_CLOEXEC, 0)
+end
+@enduml

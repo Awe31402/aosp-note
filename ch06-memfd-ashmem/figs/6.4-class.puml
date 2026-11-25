@@ -1,0 +1,105 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam ClassBackgroundColor #F8FAFC
+skinparam ClassBorderColor #334155
+skinparam ClassHeaderBackgroundColor #E2E8F0
+skinparam ArrowColor #1E293B
+
+interface Parcelable <<android.os>>
+interface Closeable <<java.io>>
+interface AutoCloseable <<java.lang>>
+
+class SharedMemory {
+  -mFileDescriptor : FileDescriptor
+  -mSize : int
+  -mMemoryRegistration : MemoryRegistration
+  -mCleaner : Cleaner
+  {static} +create(name, size) : SharedMemory
+  {static} +fromFileDescriptor(fd) : SharedMemory
+  +setProtect(prot) : boolean
+  +isRegionReadOnly() : boolean
+  +mapReadWrite() : ByteBuffer
+  +mapReadOnly() : ByteBuffer
+  +map(prot, offset, length) : ByteBuffer
+  {static} +unmap(buffer) : void
+  +writeToParcel(dest, flags) : void
+  +close() : void
+}
+
+class MemoryRegistration <<SharedMemory inner>> {
+  -mSize : int
+  -mReferenceCount : int
+  +acquire() : MemoryRegistration
+  +release() : void
+}
+
+class Closer <<SharedMemory inner>> {
+  -mFd : int
+  -mMemoryReference : MemoryRegistration
+  +run() : void
+}
+
+class Unmapper <<SharedMemory inner>> {
+  -mAddress : long
+  -mSize : int
+  -mMemoryReference : MemoryRegistration
+  +run() : void
+}
+
+class MemoryFile {
+  -mSharedMemory : SharedMemory
+  -mMapping : ByteBuffer
+  -mAllowPurging : boolean
+  +MemoryFile(name, length)
+  +allowPurging(allow) : boolean
+  +readBytes(...) : int
+  +writeBytes(...) : void
+  +close() : void
+}
+
+class ApplicationSharedMemory <<com.android.internal.os>> {
+  {static} +create() : ApplicationSharedMemory
+  {static} +fromFileDescriptor(fd, mutable) : ApplicationSharedMemory
+  {static} -nativeCreate() : int
+  {static} -nativeMap(fd, isMutable) : long
+  {static} -nativeDupAsReadOnly(fd) : int
+}
+
+class "android_os_SharedMemory.cpp" as JniSM <<JNI>> {
+  +SharedMemory_nCreate(name, size)
+  +SharedMemory_nGetSize(fd)
+  +SharedMemory_nSetProt(fd, prot)
+}
+
+class "android_os_MemoryFile.cpp" as JniMF <<JNI>> {
+  +android_os_MemoryFile_pin(fd, pin)
+  +android_os_MemoryFile_get_size(fd)
+}
+
+class "libcutils (ashmem-dev.cpp)" as Cutils <<Native>> {
+  +ashmem_create_region()
+  +ashmem_valid()
+  +ashmem_get_size_region()
+  +ashmem_set_prot_region()
+  +ashmem_pin_region() / unpin()
+}
+
+Parcelable <|.. SharedMemory
+Closeable <|.. SharedMemory
+AutoCloseable <|.. ApplicationSharedMemory
+SharedMemory *-- MemoryRegistration
+SharedMemory *-- Closer
+SharedMemory ..> Unmapper : map() -> DirectByteBuffer
+Closer --> MemoryRegistration : release()
+Unmapper --> MemoryRegistration : release()
+MemoryFile o--> SharedMemory : mSharedMemory (薄包裝)
+SharedMemory ..> JniSM : nCreate / nGetSize / nSetProt
+MemoryFile ..> JniMF : @FastNative native_pin / native_get_size
+JniSM --> Cutils
+JniMF --> Cutils
+ApplicationSharedMemory --> Cutils : JNI -> ashmem_create_region / set_prot
+@enduml

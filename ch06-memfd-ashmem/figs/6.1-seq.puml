@@ -1,0 +1,67 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "使用者空間\n(libcutils / App)" as User
+participant "mm/memfd.c\n& SELinux" as Memfd
+participant "ueventd\n(devices.cpp)" as Ueventd
+participant "ashmem.rs\n(AshmemMisc)" as Ashmem
+participant "ashmem_range.rs\n(Area / Shrinker)" as Range
+participant "mm/shmem.c\n(tmpfs)" as Shmem
+participant "Linux VM\n(kswapd)" as VM
+
+group #EFF6FF 路徑 A：Linux 6.18 主線 memfd 建立、封印與映射 (Android 17 預設)
+  User -> Memfd : memfd_create(name, MFD_CLOEXEC | MFD_ALLOW_SEALING)
+  Memfd -> Memfd : sanitize_flags() + alloc_name("memfd:" + name)
+  Memfd -> Shmem : alloc_file() -> shmem_file_setup(name, 0, VM_NORESERVE)
+  Memfd -> Memfd : 設 SHMEM_FL_MEMFD + security_inode_init_security_anon(SECCLASS_MEMFD_FILE)
+  Memfd -> Memfd : 清除 F_SEAL_SEAL 允許封印 -> fd_install() 回傳 fd
+  User -> Shmem : ftruncate(fd, size) 設定大小
+  User -> Memfd : fcntl(fd, F_ADD_SEALS, F_SEAL_GROW | F_SEAL_SHRINK)
+  Memfd -> Memfd : memfd_fcntl() -> memfd_add_seals() 寫入 SHMEM_I(inode)->seals
+  User -> Shmem : mmap(MAP_SHARED, PROT_READ | PROT_WRITE) -> mm/mmap.c::do_mmap()
+  Shmem -> Memfd : memfd_check_seals_mmap() 檢查寫入封印並清除 VM_MAYWRITE
+  User -> Memfd : fcntl(fd, F_ADD_SEALS, F_SEAL_FUTURE_WRITE) 鎖定後續唯讀映射
+  opt 舊二進位檔對 memfd 呼叫 ioctl(ASHMEM_*)
+    Shmem -> Ashmem : shmem_ashmem_ioctl() 檢查 SHMEM_FL_MEMFD -> ashmem_memfd_ioctl() 轉譯
+  end
+end
+
+group #F0FDF4 路徑 B1：Rust Ashmem 模組初始化、ueventd 節點複製與開啟設定
+  Ashmem -> Ashmem : AshmemModule::init(): init(SHMEM_FOPS_ONCE, ASHMEM_MUTEX, ASHMEM_SHRINKER)
+  Ashmem -> Range : set_shrinker_enabled(true) 註冊 "android-ashmem" Shrinker
+  Ashmem -> Ashmem : MiscDeviceRegistration::register("ashmem") + 3 個 AshmemToggleMisc
+  Ashmem --> Ueventd : KOBJ_ADD uevent (device_name == "ashmem")
+  Ueventd -> Ueventd : HandleAshmemUevent() 讀 boot_id 並複製建立 /dev/ashmem<boot_id>
+  User -> Ashmem : open("/dev/ashmem<boot_id>") -> AshmemMisc::open() 建立 AshmemInner (prot_mask=RWX)
+  User -> Ashmem : ioctl(ASHMEM_SET_NAME / SET_SIZE / SET_PROT_MASK)
+  User -> Ashmem : mmap(MAP_SHARED) -> AshmemMisc::mmap() 檢查 prot_mask 並清除 VM_MAY*
+  Ashmem -> Shmem : ShmemFile::new() -> shmem_file_setup() + 替換 VMFILE_FOPS (禁直接 mmap)
+  Ashmem -> Shmem : shmem::zero_setup(vma) + shmem::set_file(vma, file)
+end
+
+group #FFF7ED 路徑 B2：Rust Ashmem 解鎖、記憶體壓力回收與重新鎖定
+  User -> Ashmem : ioctl(ASHMEM_UNPIN, &pin) -> pin_unpin() 預配 UniqueArc<MaybeUninit<Range>>
+  Ashmem -> Range : 鎖 ASHMEM_MUTEX -> Area::unpin() 合併重疊區間並推入 lru_list
+  VM -> Range : 記憶體壓力觸發 count_objects() (無鎖讀 LRU_COUNT_SATURATED)
+  VM -> Range : scan_objects() -> ASHMEM_MUTEX.try_lock() -> free_lru(nr_to_scan)
+  Range -> Range : pop_back() 標記 purged=true 並遞減 lru_count
+  Range -> Shmem : ShmemFile::punch_hole() -> fallocate(FALLOC_FL_PUNCH_HOLE | KEEP_SIZE) 釋放頁框
+  User -> Ashmem : ioctl(ASHMEM_PIN, &pin) -> Area::pin() 移出或拆分 unpinned_list
+  Ashmem --> User : 回傳 ASHMEM_WAS_PURGED (1) 或 ASHMEM_NOT_PURGED (0)
+end
+@enduml

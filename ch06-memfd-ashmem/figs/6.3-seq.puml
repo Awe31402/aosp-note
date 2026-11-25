@@ -1,0 +1,72 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Server\n(MemoryDealer)" as Server
+participant "MemoryHeapBase\n(BnMemoryHeap)" as Heap
+participant "Allocation /\nMemoryBase\n(BnMemory)" as Mem
+participant "Binder 驅動\n(IPC)" as Binder
+participant "Client\nBpMemory" as BpM
+participant "Client\nBpMemoryHeap" as BpH
+participant "Client\ngHeapCache" as Cache
+
+group #EFF6FF 階段一：Server 建立 MemoryHeapBase 與切分子塊 MemoryBase
+  Server -> Heap : sp<MemoryHeapBase>::make(size, flags, name)
+  alt flags & FORCE_MEMFD
+    Heap -> Heap : memfd_create_region(name, size) -> mapfd(fd, true, size)
+    Heap -> Heap : fcntl(F_ADD_SEALS, F_SEAL_GROW | F_SEAL_SHRINK | [FUTURE_WRITE] | [SEAL])
+  else 一般模式
+    Heap -> Heap : ashmem_create_region(name, size) -> mapfd(fd, true, size)
+    opt flags & READ_ONLY
+      Heap -> Heap : ashmem_set_prot_region(fd, PROT_READ)
+    end
+  end
+  Server -> Mem : MemoryDealer::allocate(subSize) -> SimpleBestFitAllocator::allocate()
+  Server -> Mem : sp<Allocation>::make(dealer, mHeap, offset, subSize)
+  Server -> Binder : 透過業務 Binder 回傳 sp<IMemory> (Allocation 的 BBinder)
+end
+
+group #F0FDF4 階段二：Client 透過 BpMemory 取得遠端 Heap 與偏移量
+  Binder --> BpM : interface_cast<IMemory>(binder) 建立 BpMemory
+  BpM -> BpM : Client 呼叫 IMemory::unsecurePointer() -> getMemory(&offset, &size)
+  BpM -> Binder : remote()->transact(GET_MEMORY)
+  Binder -> Mem : BnMemory::onTransact(GET_MEMORY)
+  Mem --> Binder : reply->writeStrongBinder(mHeap) + writeInt64(offset) + writeUint64(size)
+  Binder --> BpM : 收到 mHeap Binder、offset64、size64
+  BpM -> BpH : interface_cast<IMemoryHeap>(heap) 建立 BpMemoryHeap
+  BpM -> BpH : mHeap->getSize() 驗證 ILP32 與 offset+size <= heapSize 邊界
+end
+
+group #FFF7ED 階段三：BpMemoryHeap 延遲映射與 HeapCache 去重快取
+  BpH -> BpH : assertMapped() (檢查 atomic mHeapId == -1)
+  BpH -> Cache : find_heap(binder) 查找或新建 realHeap (count++)
+  BpH -> BpH : realHeap->assertReallyMapped()
+  BpH -> Binder : remote()->transact(HEAP_ID)
+  Binder -> Heap : BnMemoryHeap::onTransact(HEAP_ID)
+  Heap --> Binder : writeFileDescriptor(mFD) + writeUint64(mSize) + writeInt64(mOffset) + writeUint32(mFlags)
+  Binder --> BpH : 接收翻譯後新 parcel_fd (同底層 struct file)
+  BpH -> BpH : fcntl(parcel_fd, F_DUPFD_CLOEXEC, 0) + mmap(MAP_SHARED, access)
+  BpH -> BpH : mRealHeap=true, mHeapId.store(fd, memory_order_release)
+  BpH -> BpH : 外層代理複製 mBase/mSize/mOffset 並 F_DUPFD_CLOEXEC 一份 fd
+  BpM --> BpM : 計算 static_cast<char*>(base) + offset 回傳零拷貝指標
+end
+
+group #FEF2F2 階段四：釋放與歸還頁框
+  BpH -> Cache : ~BpMemoryHeap() -> close(heapId) + free_heap(binder) (count==0 時 munmap)
+  Mem -> Server : ~Allocation() -> madvise(MADV_REMOVE) 歸還整頁 + mDealer->deallocate(offset)
+end
+@enduml

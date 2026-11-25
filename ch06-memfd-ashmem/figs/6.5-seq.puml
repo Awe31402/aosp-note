@@ -1,0 +1,62 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "行程 A\n(發送端 libbinder)" as ProcA
+participant "Binder 驅動\n(binder.c)" as Binder
+participant "SELinux LSM" as LSM
+participant "行程 B\n(接收端 libbinder)" as ProcB
+participant "mm/mmap.c &\nmm/memfd.c" as Mmap
+participant "mm/shmem.c\n(同一 inode / folio)" as Shmem
+
+group #EFF6FF 階段一：行程 A 封裝 BINDER_TYPE_FD 並發起交易
+  ProcA -> ProcA : 建立 memfd/ashmem -> 取得 fd_A (指向核心 struct file F)
+  ProcA -> Shmem : mmap(PROT_READ | PROT_WRITE, MAP_SHARED, fd_A) 寫入資料
+  ProcA -> Mmap : fcntl(fd_A, F_ADD_SEALS, F_SEAL_FUTURE_WRITE) (或 ASHMEM_SET_PROT_MASK)
+  ProcA -> ProcA : Parcel::writeFileDescriptor(fd_A) 寫入 flat_binder_object (BINDER_TYPE_FD)
+  ProcA -> Binder : ioctl(BINDER_WRITE_READ) -> binder_transaction()
+end
+
+group #F0FDF4 階段二：發送端執行緒翻譯 FD（僅記錄 fixup，不碰行程 B 的 FD 表）
+  Binder -> Binder : binder_translate_fd(fd_A, fd_offset, t, thread)
+  Binder -> Binder : 檢查 target_node->accept_fds / TF_ACCEPT_FDS
+  Binder -> Binder : file = fget(fd_A) (遞增 struct file F 的引用計數)
+  Binder -> LSM : security_binder_transfer_file(proc->cred, target_proc->cred, file)
+  LSM --> Binder : SELinux 檢查 SECCLASS_MEMFD_FILE / file 的 transfer 權限通過
+  Binder -> Binder : kzalloc(binder_txn_fd_fixup) 填入 file=F, offset, target_fd=-1
+  Binder -> Binder : list_add_tail(&fixup->fixup_entry, &t->fd_fixups) 並喚醒行程 B
+end
+
+group #FFF7ED 階段三：行程 B 執行緒讀取交易時延遲安裝 FD（binder_apply_fd_fixups）
+  ProcB -> Binder : ioctl(BINDER_WRITE_READ) -> binder_thread_read()
+  Binder -> Binder : binder_apply_fd_fixups(proc_B, t) (已在行程 B 上下文)
+  Binder -> Binder : fd_B = get_unused_fd_flags(O_CLOEXEC) (在行程 B files_struct 保留槽位)
+  Binder -> Binder : binder_alloc_copy_to_buffer() 將 fd_B 寫回目標緩衝區 fixup->offset
+  Binder -> Binder : fd_install(fd_B, F) 將行程 B 的 fd_B 綁定至同一個 struct file F
+  Binder --> ProcB : 回傳 BR_TRANSACTION / BR_REPLY
+  ProcB -> ProcB : Parcel::readFileDescriptor() 讀出 flat->handle == fd_B
+end
+
+group #FAF5FF 階段四：雙行程 mmap(MAP_SHARED) 與 shmem_fault 共享同一實體頁框
+  ProcB -> Mmap : mmap(NULL, size, PROT_READ, MAP_SHARED, fd_B, 0) -> do_mmap()
+  Mmap -> Mmap : memfd_check_seals_mmap() 檢查 F_SEAL_FUTURE_WRITE，拒 PROT_WRITE 並清 VM_MAYWRITE
+  Mmap -> Shmem : shmem_mmap() 綁定 vma->vm_ops = &shmem_anon_vm_ops (兩行程 VMA 指向同一個 inode)
+  ProcB -> Shmem : 首次讀取觸發缺頁異常 -> shmem_fault(vmf)
+  Shmem -> Shmem : shmem_get_folio_gfp(inode, vmf->pgoff, ..., SGP_CACHE) 命中行程 A 已寫入的 struct folio
+  Shmem --> ProcB : 將同一實體頁框 (folio_file_page) 填入行程 B 頁表 (零拷貝讀取成功)
+end
+@enduml
