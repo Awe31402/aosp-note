@@ -1,0 +1,59 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "ATMS / Supervisor\n/ RootWindowContainer" as ATMS
+participant "AMS / ProcessList\n(system_server)" as AMS
+participant "ClientLifecycleManager" as CLM
+participant "目標新進程\n(ActivityThread / H)" as App
+participant "TransactionExecutor\n& MainActivity" as TE
+
+group #EFF6FF 階段一：異步建程與 Zygote 孵化（Step 1–2）
+  ATMS -> ATMS : startProcessAsync(r) [寫入 mStartingProcessActivities + Z-order 排序]\n-> mH.sendMessage(PooledLambda -> ActivityManagerInternal::startProcess)
+  ATMS -> AMS : AMS.LocalService.startProcess() [ZYGOTE_POLICY_FLAG_LATENCY_SENSITIVE]
+  AMS -> App : ProcessList.startProcessLocked() -> Zygote fork (seq=startSeq)\n-> ActivityThread.main(args)
+end
+
+group #F0FDF4 階段二：新進程註冊與 bindApplication（Step 3–5）
+  App -> App : 解析 seq=startSeq -> Looper.prepareMainLooper()\n-> new ActivityThread().attach(false, startSeq)
+  App -> AMS : IActivityManager.attachApplication(mAppThread, startSeq) [Binder]
+  AMS -> App : IApplicationThread.bindApplication(..., ApplicationSharedMemoryFd) [oneway]
+  AMS -> AMS : app.makeActive(...) [綁定 WPC.mThread]
+  alt Flags.expediteActivityLaunchOnColdStart() == true
+    AMS -> ATMS : 立即呼叫 mAtmInternal.attachApplication(wpc)
+  else 傳統兩階段
+    AMS -> ATMS : finishAttachApplicationInner() -> mAtmInternal.attachApplication(wpc)
+  end
+  ATMS -> ATMS : RootWindowContainer.attachApplication(wpc)\n逆序消費 mStartingProcessActivities 匹配 (uid, processName)
+end
+
+group #FFF7ED 階段三：realStartActivityLocked 立即下發啟動事務（Step 6）
+  ATMS -> ATMS : ActivityTaskSupervisor.realStartActivityLocked(r, wpc, canResume=true)\n檢查 allPausedActivitiesComplete() + r.setProcess(proc)
+  ATMS -> CLM : tryRealStartActivityInner() -> scheduleTransactionItems(\nshouldDispatchImmediately=true, LaunchActivityItem[夾帶 IActivityClientController], ResumeActivityItem)
+  CLM -> App : IApplicationThread.scheduleTransaction(ClientTransaction) [oneway]
+  ATMS -> ATMS : r.setState(RESUMED) + r.completeResumeLocked()
+end
+
+group #F5F3FF 階段四：TransactionExecutor 驅動完整生命週期（Step 7–8）
+  App -> App : preExecute() [ActivityClient.setActivityClientController 快取]\n-> sendMessage(H.EXECUTE_TRANSACTION)
+  App -> TE : TransactionExecutor.execute(transaction)
+  TE -> TE : ① LaunchActivityItem.execute() -> handleLaunchActivity()\n-> HardwareRenderer.preload() -> performLaunchActivity()\n-> newActivity() -> activity.attach() -> MainActivity.onCreate() [state=ON_CREATE]
+  TE -> TE : ② ResumeActivityItem: cycleToPath(ON_CREATE -> ON_RESUME, excludeLast=true)\n自動補齊 handleStartActivity() -> MainActivity.onStart()
+  TE -> TE : ③ ResumeActivityItem.execute() -> handleResumeActivity()\n-> MainActivity.onResume() + wm.addView(decor, l)
+  TE -> ATMS : ResumeActivityItem.postExecute() -> ActivityClient.activityResumed() [oneway]
+end
+@enduml

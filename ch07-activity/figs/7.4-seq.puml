@@ -1,0 +1,54 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "MainActivity 進程\n(Process A)" as ProcA
+participant "ActivityStarter /\nTaskFragment (ATMS)" as ATMS
+participant "ActivityTaskSupervisor\n& ClientLifecycleManager" as Sup
+participant "AMS / Zygote" as AMS
+participant "獨立子進程\n(Process B，僅情景三)" as ProcB
+
+group #EFF6FF 第一道分流：復用來源 Task（情景二 & 情景三共同路徑）
+  ProcA -> ATMS : startActivity(intent [無 FLAG_ACTIVITY_NEW_TASK], mToken=MainActivity)
+  ATMS -> ATMS : ActivityStarter.startActivityInner()\n-> computeTargetTask() 命中 mSourceRecord.getTask() [newTask=false, mAddingToTask=true]
+  ATMS -> ATMS : addOrReparentStartingActivity(targetTask, "adding to task")\n-> newParent.addChild(SubActivityRecord, POSITION_TOP)
+  ATMS -> ATMS : TaskFragment.resumeTopActivity()\n-> 同 TaskFragment 內 startPausing(mResumedActivity=MainActivity)
+  ATMS -> ProcA : scheduleTransaction(PauseActivityItem)
+end
+
+group #F0FDF4 情景二（同進程 SubActivityInProcess）：熱路徑免建程
+  note over ATMS : next.isProcessRunning() == true -> 不觸發 startProcessAsync
+  ProcA -> ProcA : MainActivity.onPause()
+  ProcA -> ATMS : ActivityClient.activityPaused(MainActivity.token) [同步 Binder]
+  ATMS -> Sup : completePause() -> resumeTopActivity() -> startSpecificActivity(SubActivity)
+  Sup -> Sup : getProcessController(processA, uid) 命中 wpc != null && wpc.hasThread()
+  Sup -> ProcA : realStartActivityLocked() [activityClientController=null]\n-> scheduleTransactionItems(shouldDispatchImmediately=true, LaunchActivityItem, ResumeActivityItem)
+  ProcA -> ProcA : 同進程 TransactionExecutor:\nSubActivityInProcess.onCreate() -> onStart() -> onResume()
+end
+
+group #FFF7ED 情景三（跨進程 SubActivityInNewProcess）：同 Task 跨 Process A / B
+  ATMS -> AMS : 暫停 MainActivity 時因 !next.isProcessRunning()\n並行觸發 ATMS.startProcessAsync(SubActivity)
+  AMS -> ProcB : ProcessList.startProcessLocked() -> Zygote fork -> ActivityThread.main()
+  ProcA -> ATMS : MainActivity.onPause() -> activityPaused() -> completePause()
+  ProcB -> AMS : IActivityManager.attachApplication(mAppThread, startSeq)
+  AMS -> ProcB : bindApplication()
+  AMS -> ATMS : mAtmInternal.attachApplication(wpcB) -> RootWindowContainer.attachApplication()
+  ATMS -> Sup : 消費 mStartingProcessActivities -> realStartActivityLocked(SubActivity, wpcB)
+  Sup -> ProcB : scheduleTransactionItems(shouldDispatchImmediately=true,\nLaunchActivityItem[夾帶 IActivityClientController], ResumeActivityItem)
+  ProcB -> ProcB : 新進程 TransactionExecutor:\nSubActivityInNewProcess.onCreate() -> onStart() -> onResume()
+end
+@enduml

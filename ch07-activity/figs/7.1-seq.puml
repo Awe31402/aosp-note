@@ -1,0 +1,60 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "發起進程\n(Launcher / MainActivity)" as Caller
+participant "ATMS / ActivityStarter\n/ TaskFragment" as ATMS
+participant "ClientLifecycleManager" as CLM
+participant "AMS / ProcessList\n(Zygote)" as AMS
+participant "目標進程\n(ActivityThread)" as Target
+
+group #EFF6FF 階段一：發起請求與任務決策（7.2 / 7.4 節）
+  Caller -> ATMS : IActivityTaskManager.startActivity(intent, options)
+  ATMS -> ATMS : ActivityStarter.execute() -> startActivityInner()
+  alt 情景一（根 Activity + FLAG_ACTIVITY_NEW_TASK）
+    ATMS -> ATMS : setNewTask() 建立新 Task 並置頂
+  else 情景二 / 三（子 Activity，無 NEW_TASK）
+    ATMS -> ATMS : addOrReparentStartingActivity(sourceTask) 壓入同一 Task
+  end
+end
+
+group #F0FDF4 階段二：暫停舊 Activity + 並行預建進程（7.2 節）
+  ATMS -> CLM : TaskFragment.startPausing() -> scheduleTransactionItem(PauseActivityItem)
+  CLM -> Caller : IApplicationThread.scheduleTransaction(PauseActivityItem)
+  opt 情景一 / 三（!next.isProcessRunning()）
+    ATMS -> AMS : 並行觸發 ATMS.startProcessAsync(next) [mH 異步投遞]\n免等 Launcher 暫停完畢即先 fork 目標進程！
+    AMS -> Target : ProcessList.startProcessLocked() -> Zygote fork -> ActivityThread.main()
+  end
+  Caller -> Caller : TransactionExecutor -> PauseActivityItem -> onPause()
+  Caller -> ATMS : IActivityClientController.activityPaused(token) [同步 Binder]
+  ATMS -> ATMS : TaskFragment.completePause() -> resumeFocusedTasksTopActivities()
+end
+
+group #FFF7ED 階段三：進程命中 vs 進程註冊與實例化（7.3 / 7.4 節）
+  alt 情景二（同進程子 Activity：wpc != null && wpc.hasThread()）
+    ATMS -> ATMS : startSpecificActivity() 命中既有進程 -> realStartActivityLocked()
+  else 情景一 / 三（新進程冷啟動）
+    Target -> AMS : IActivityManager.attachApplication(mAppThread, startSeq)
+    AMS -> Target : bindApplication() [建立 Application]
+    AMS -> ATMS : mAtmInternal.attachApplication(wpc) -> RootWindowContainer.attachApplication()
+    ATMS -> ATMS : 消費 mStartingProcessActivities -> realStartActivityLocked()
+  end
+  ATMS -> CLM : scheduleTransactionItems(shouldDispatchImmediately=true,\nLaunchActivityItem, ResumeActivityItem)
+  CLM -> Target : IApplicationThread.scheduleTransaction()
+  Target -> Target : H.EXECUTE_TRANSACTION -> TransactionExecutor.execute()\n1. LaunchActivityItem -> performLaunchActivity -> onCreate()\n2. cycleToPath -> performStart -> onStart()\n3. ResumeActivityItem -> handleResumeActivity -> onResume()
+end
+@enduml

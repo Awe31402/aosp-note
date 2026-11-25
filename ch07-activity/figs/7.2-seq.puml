@@ -1,0 +1,54 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Launcher\n(Activity / Instrumentation)" as Launcher
+participant "ATMS / ActivityStarter\n(system_server)" as Starter
+participant "RootWindowContainer /\nTaskFragment" as TF
+participant "ClientLifecycleManager" as CLM
+participant "AMS (mH 異步建程)" as AMS
+
+group #EFF6FF 階段一：發起請求與建構新 Task（Step 1–5）
+  Launcher -> Launcher : Activity.startActivity(intent [FLAG_ACTIVITY_NEW_TASK])\n-> startActivityForResult(intent, -1, options)
+  Launcher -> Starter : Instrumentation.execStartActivity()\n-> IActivityTaskManager.startActivity() [Binder]
+  Starter -> Starter : ATMS.startActivityAsUser() -> ActivityStartController.obtainStarter().execute()
+  Starter -> Starter : 鎖外 resolveActivity() -> 鎖內 executeRequest() [權限 / BAL / 建 ActivityRecord r]
+  Starter -> Starter : startActivityUnchecked() [deferWindowLayout + collect Transition]\n-> startActivityInner() -> computeTargetTask()==null (newTask=true)\n-> getOrCreateRootTask() -> setNewTask() -> moveToFront()
+end
+
+group #F0FDF4 階段二：排程暫停 Launcher + 並行預建目標進程（Step 6–7）
+  Starter -> TF : RootWindowContainer.resumeFocusedTasksTopActivities(mTargetRootTask, r)
+  TF -> TF : TaskFragment.resumeTopActivity()\n-> taskDisplayArea.pauseBackTasks(next) -> Launcher.TaskFragment.startPausing()
+  TF -> CLM : schedulePauseActivity() -> scheduleTransactionItem(PauseActivityItem)
+  note right of TF
+    Android 17 關鍵並行化：
+    pausing == true 且 !next.isProcessRunning() 時，
+    不等 Launcher 暫停完成即先發起異步建程！
+  end note
+  TF -> AMS : mAtmService.startProcessAsync(next, HOSTING_TYPE_NEXT_TOP_ACTIVITY)\n[加入 mStartingProcessActivities + mH 異步投遞]
+  Starter -> CLM : continueWindowLayout() -> dispatchPendingTransactions()
+  CLM -> Launcher : IApplicationThread.scheduleTransaction(PauseActivityItem) [oneway]
+end
+
+group #FFF7ED 階段三：Launcher 執行 onPause 並回報 completePause（Step 8–10）
+  Launcher -> Launcher : ApplicationThread.scheduleTransaction() -> preExecute()\n-> sendMessage(H.EXECUTE_TRANSACTION)
+  Launcher -> Launcher : TransactionExecutor.execute() -> PauseActivityItem.execute()\n-> handlePauseActivity() -> onUserLeaveHint() + onPause()
+  Launcher -> TF : PauseActivityItem.postExecute()\n-> ActivityClient.activityPaused(token)\n-> ActivityClientController.activityPaused() [同步 Binder]
+  TF -> TF : ActivityRecord.activityPaused(false) [移除 500ms timeout]\n-> TaskFragment.completePause(resumeNext=true)\n[mPausingActivity=null, state=PAUSED]
+  TF -> TF : resumeFocusedTasksTopActivities(topRootTask, prev)\n[若新進程已附著則直入 realStartActivityLocked；否則等待 7.3 節 attachApplication]
+end
+@enduml

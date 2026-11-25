@@ -5,8 +5,8 @@
 
 ## 目前狀態
 
-- **現在**：**第 5 章（Binder）、第 2 章（AIDL HAL）、第 4 章（`logd + liblog`）、第 6 章（`memfd / 現行 ashmem`）與第 3 章（智能指標 `LightRefBase / RefBase / sp / wp`）皆已全章完成**；最新完成的第 3 章（[ch03-smart-pointer/00-outline.md](ch03-smart-pointer/00-outline.md) 與 `3.1`–`3.4` 共 4 節、2,280 行、34 個 Step、61 段原始碼、1,320 行逐行比對驗證 0 筆不符、6 張 PlantUML 圖表）全數通過檢查。
-- **下一步**：進入順位第 6 的**第 7 章〈Activity 組件的啟動過程〉**，先產出檢查點 1 大綱 `ch07-activity/00-outline.md`。
+- **現在**：**第 5 章（Binder）、第 2 章（AIDL HAL）、第 4 章（`logd + liblog`）、第 6 章（`memfd / 現行 ashmem`）、第 3 章（智能指標）與第 7 章（Activity 啟動過程）皆已全章完成**；最新完成的第 7 章（[ch07-activity/00-outline.md](ch07-activity/00-outline.md) 與 `7.1`–`7.4` 共 4 節、2,055 行、29 個 Step、66 段原始碼、1,220 行逐行比對驗證 0 筆不符、5 張 PlantUML 圖表）全數通過檢查。
+- **下一步**：進入順位第 7 的**第 8 章〈Service 組件的啟動過程〉**，先產出檢查點 1 大綱 `ch08-service/00-outline.md`。
 - **待決事項**：
   - [x] 確認 17 對應的 GKI kernel 分支名稱：已確認為 `kernel/common` 的 `android17-6.18`（`028363aa3cfa` / `1e0de07`）
   - [x] 確認 `ch05-binder/00-outline.md`（檢查點 1 通過）
@@ -16,6 +16,7 @@
   - [x] 完成第 4 章（`logd + liblog`）大綱與全章 `4.1`–`4.6`
   - [x] 完成第 6 章（`memfd / 現行 ashmem`）大綱與全章 `6.1`–`6.5`
   - [x] 完成第 3 章（智能指標）大綱與全章 `3.1`–`3.4`
+  - [x] 完成第 7 章（Activity 啟動過程）大綱與全章 `7.1`–`7.4`
 
 ## 章節進度
 
@@ -28,7 +29,7 @@
 | 3 | 第 4 章 Logger 日誌系統 | logd + liblog | 改寫成新機制（4.1–4.6 全章完成） | ✅ |
 | 4 | 第 6 章 Ashmem 匿名共享記憶體 | memfd / 現行 ashmem | 改寫成新機制（6.1–6.5 全章完成） | ✅ |
 | 5 | 第 3 章 智能指標 | 智能指標（RefBase / sp / wp） | 重追（3.1–3.4 全章完成） | ✅ |
-| 6 | 第 7 章 Activity 組件的啟動過程 | — | 重追 | ⬜ |
+| 6 | 第 7 章 Activity 組件的啟動過程 | Activity 啟動過程（ATMS / `ActivityStarter` / `ClientTransaction`） | 重追（7.1–7.4 全章完成） | ✅ |
 | 7 | 第 8 章 Service 組件的啟動過程 | — | 重追 | ⬜ |
 | 8 | 第 9 章 Android 系統廣播機制 | — | 重追 | ⬜ |
 | 9 | 第 10 章 Content Provider 組件的實現原理 | — | 重追 | ⬜ |
@@ -70,3 +71,6 @@
 - **2026-11-25**：完成第 3 章〈智能指標（`LightRefBase` / `RefBase` / `sp` / `wp`）〉檢查點 1 大綱 `ch03-smart-pointer/00-outline.md`（對照原書 p.57–79 與 `platform/system/core/libutils/binder/`、`platform/frameworks/native/libs/binder/`、`platform/frameworks/base/core/jni/` 於 `android-17.0.0_r1` 驗證，整理為 `3.1`–`3.4` 四節與完整 2.3 → 17 對照表），等待確認。
 - **2026-11-25**：第 3 章檢查點 1 通過；完成檢查點 2 第一節 `ch03-smart-pointer/3.1-light-pointer.md`（10 個 Step、15 段原始碼、350 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`，附 PlantUML 類別圖 `figs/3.1-class.png` 與時序圖 `figs/3.1-seq.png`），等待確認深度與篇幅。
 - **2026-11-25**：第 3 章檢查點 2 通過；完成第 3 章剩餘全部小節 `3.2-strong-pointer.md`、`3.3-weak-pointer.md`、`3.4-practice-and-safety.md`；第 3 章全章 4 節（2,280 行、34 個 Step、61 段程式碼、1,320 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、6 張 PlantUML 圖表全數編譯並目視檢查通過），狀態推進至 ✅ 全章完成。
+- **2026-11-25**：完成第 7 章〈Activity 組件的啟動過程〉檢查點 1 大綱 `ch07-activity/00-outline.md`（對照原書 p.400–450 與 `platform/frameworks/base` `android-17.0.0_r1` `94b4c163b` 驗證 ATMS、`ActivityStarter`、`TaskFragment`、`ClientLifecycleManager`、`ClientTransaction`、`TransactionExecutor` 與並行 `startProcessAsync`，規劃為 `7.1`–`7.4` 四節並附完整 2.3 → 17 對照表），等待確認。
+- **2026-11-25**：第 7 章檢查點 1 通過；完成檢查點 2 第一節 `ch07-activity/7.1-architecture-and-scenario.md`（7 個 Step、17 段原始碼、246 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`，附 PlantUML 架構圖 `figs/7.1-arch.png` 與三情景總覽時序圖 `figs/7.1-seq.png`），等待確認深度與篇幅。
+- **2026-11-25**：第 7 章檢查點 2 通過；完成第 7 章剩餘全部小節 `7.2-root-activity-request-and-pause.md`、`7.3-root-activity-process-and-launch.md`、`7.4-sub-activity-in-and-across-process.md`；第 7 章全章 4 節（2,055 行、29 個 Step、66 段程式碼、1,220 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、5 張 PlantUML 圖表全數編譯並目視檢查通過），狀態推進至 ✅ 全章完成。

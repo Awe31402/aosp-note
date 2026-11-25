@@ -1,0 +1,73 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam ArrowColor #1E293B
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+package "呼叫端進程（Launcher / MainActivity）" as CallerProc #EFF6FF {
+  [Activity / Instrumentation] as Inst
+  [ActivityTaskManager\n(IActivityTaskManager 代理)] as ATMProxy
+  [ActivityClient\n(IActivityClientController 代理)] as ACProxy
+  [ActivityThread / TransactionExecutor\n(IApplicationThread.Stub)] as CallerAT
+}
+
+package "system_server（ATMS + WMS + AMS）" as SysServer #F0FDF4 {
+  package "ActivityTaskManagerService (mGlobalLock)" as ATMSBox #FFFFFF {
+    [ActivityStartController\n& ActivityStarter] as Starter
+    [ActivityTaskSupervisor] as Sup
+    [ActivityClientController] as ACC
+    [ClientLifecycleManager\n(mPendingTransactions)] as CLM
+    [WindowProcessController\n(mProcessNames)] as WPC
+  }
+
+  package "WindowContainer 六層階層樹 (com.android.server.wm)" as WMTree #FFFBEB {
+    [RootWindowContainer] as RWC
+    [DisplayContent] as DC
+    [TaskDisplayArea] as TDA
+    [Task (extends TaskFragment)] as Task
+    [TaskFragment\n(resumeTopActivity / startPausing)] as TF
+    [ActivityRecord (extends WindowToken)\nState: INITIALIZING..RESUMED..DESTROYED] as AR
+    RWC --> DC
+    DC --> TDA
+    TDA --> Task
+    Task --> TF
+    TF --> AR
+  }
+
+  package "ActivityManagerService (com.android.server.am)" as AMSBox #FDF2F8 {
+    [AMS.attachApplicationLocked\n& AMS.LocalService.startProcess] as AMS
+    [ProcessList.startProcessLocked] as PList
+    AMS --> PList
+  }
+}
+
+package "目標應用進程（新進程或復用同進程）" as TargetProc #F5F3FF {
+  [ActivityThread.main()\n& H.EXECUTE_TRANSACTION] as TargetAT
+  [TransactionExecutor\n(LaunchActivityItem + ResumeActivityItem)] as TE
+  [Target Activity\n(onCreate / onStart / onResume)] as TargetAct
+  TargetAT --> TE
+  TE --> TargetAct
+}
+
+Inst --> ATMProxy : startActivity()
+ATMProxy --> Starter : ① IActivityTaskManager\nstartActivity() [Binder]
+Starter --> RWC : 建立/復用 Task\n掛入 ActivityRecord
+TF --> CLM : 排程 PauseActivityItem
+TF --> AMS : 並行 startProcessAsync()\n(mH 異步投遞，免死鎖)
+CLM --> CallerAT : ② IApplicationThread\nscheduleTransaction(PauseActivityItem)
+CallerAT --> ACProxy : PauseActivityItem.postExecute
+ACProxy --> ACC : ③ IActivityClientController\nactivityPaused(token) [同步 Binder]
+ACC --> TF : completePause()
+
+TargetAT --> AMS : ④ IActivityManager\nattachApplication(appThread, startSeq)
+AMS --> RWC : mAtmInternal.attachApplication(wpc)\n消費 mStartingProcessActivities
+RWC --> Sup : realStartActivityLocked()
+Sup --> CLM : scheduleTransactionItems(\nshouldDispatchImmediately=true,\nLaunchActivityItem, ResumeActivityItem)
+CLM --> TargetAT : ② IApplicationThread\nscheduleTransaction()
+Sup ..> WPC : 查詢/更新進程鏡像
+@enduml
