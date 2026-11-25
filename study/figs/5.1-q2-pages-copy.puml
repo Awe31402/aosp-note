@@ -1,0 +1,67 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 300
+skinparam ParticipantPadding 12
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "發送端行程\n(binder_transaction)" as Txn
+participant "緩衝區配置器\n(binder_alloc.c)" as Alloc
+participant "目標行程位址空間\n(alloc->mm / VMA)" as TargetMM
+participant "目標實體頁\n(alloc->pages[])" as Pages
+
+group #EFF6FF 階段一：切出虛擬空間（持有 alloc->mutex）
+  Txn -> Alloc : binder_alloc_new_buf(&target_proc->alloc, ...)\n[binder.c:3612 -> binder_alloc.c:663-715]
+  activate Alloc
+  Alloc -> Alloc : 鎖外預配切分用 next (kzalloc)\n鎖上 alloc->mutex
+  Alloc -> Alloc : binder_alloc_new_buf_locked()\n[binder_alloc.c:520-624]\n1. 在 free_buffers 紅黑樹 Best-fit 切出 buffer\n2. binder_lru_freelist_del() 摘回範圍內已裝熱頁\n3. 插進 allocated_buffers 紅黑樹
+  Alloc -> Alloc : 釋放 alloc->mutex（縮短臨界區，避免鎖內配頁阻塞併發）
+end
+
+group #F0FDF4 階段二：鎖外按需配頁並裝入目標頁表（Q2-2）
+  Alloc -> Alloc : binder_install_buffer_pages(alloc, buffer, size)\n[binder_alloc.c:366-394]
+  loop 逐頁遍歷 [user_data & PAGE_MASK, PAGE_ALIGN(user_data + size))
+    alt binder_get_installed_page(alloc, index) != NULL
+      Alloc -> Pages : 熱頁已存在，直接跳過複用
+    else 尚未裝頁（NULL）
+      Alloc -> Alloc : binder_install_single_page(alloc, index, addr)\n[binder_alloc.c:317-364]\n1. mmget_not_zero(alloc->mm) 保活目標 mm\n2. binder_page_alloc(): alloc_page(__GFP_ZERO) 配清零頁
+      Alloc -> TargetMM : binder_page_insert(alloc, addr, page)\n[binder_alloc.c:259-284]\n優先 lock_vma_under_rcu()（失敗退回 mmap_read_lock）\n-> vm_insert_page(vma, addr, page) 裝入 PTE
+      alt 回傳 0（裝頁成功）
+        Alloc -> Pages : binder_set_installed_page(alloc, index, page)\n(smp_store_release 寫入 alloc->pages[index])
+      else 回傳 -EBUSY（併發執行緒搶先裝好同一共用邊界頁）
+        Alloc -> TargetMM : 丟棄自配頁 -> binder_page_lookup() 取回先到者的頁\n寫入 alloc->pages[index]
+      end
+    end
+  end
+  Alloc --> Txn : return t->buffer（實體頁全數就緒）
+  deactivate Alloc
+end
+
+group #FFF7ED 階段三：無常駐 Kernel VA 下的一次拷貝（Q2-1）
+  Txn -> Alloc : binder_alloc_copy_user_to_buffer(alloc, buffer, offset, from, bytes)\n[binder.c:3657 -> binder_alloc.c:1346-1375]
+  activate Alloc
+  loop while (bytes > 0) 逐頁拷貝
+    Alloc -> Pages : binder_alloc_get_page(alloc, buffer, offset, &pgoff)\n[binder_alloc.c:827-840]\n由 user_data - vm_start + offset 算出 index 與頁內偏移\n回傳 alloc->pages[index]
+    Alloc -> Pages : kptr = kmap_local_page(page) + pgoff\n（取得短暫、僅限當前 CPU 的臨時核心指標）
+    Alloc -> Pages : copy_from_user(kptr, from, size)\n發送端 userspace 一步直接寫入目標實體頁！
+    Alloc -> Pages : kunmap_local(kptr)（立刻解除臨時映射）
+  end
+  note over Txn, Pages
+    因為目標行程的 r--p 頁表（階段二）已指向同一批實體頁，
+    目標行程醒來即可直接讀取——完全省去常駐 vmalloc kernel VA，同時維持「全路徑僅一次拷貝」。
+  end note
+  Alloc --> Txn : return 0（拷貝完成）
+  deactivate Alloc
+end
+@enduml
