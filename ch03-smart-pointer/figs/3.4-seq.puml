@@ -1,0 +1,65 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "ProcessState\n(mLock 保護句柄表)" as PS
+participant "BpBinder\n(OBJECT_LIFETIME_WEAK)" as BP
+participant "weakref_impl\n(mRefs)" as Impl
+participant "JNI / Java\nBinderProxyNativeData" as JNI
+participant "Binder 驅動\n(IPCThreadState)" as Drv
+
+group #EFF6FF 階段一：初次建立 BpBinder 與 Java Proxy RBSAN 標籤
+  PS -> BP : BpBinder::PrivateAccessor::create(handle) -> sp<BpBinder>::make()
+  BP -> Impl : extendObjectLifetime(OBJECT_LIFETIME_WEAK)
+  BP -> Drv : incWeakHandle(handle) [建構子先持核心弱引用]
+  BP -> Impl : incStrong -> onFirstRef()
+  BP -> Drv : incStrongHandle(handle) [BC_ACQUIRE]
+  PS -> PS : 寫入 handle_entry: e->binder = bp.get(), e->refs = bp->getWeakRefs()
+  JNI -> Impl : javaObjectForIBinder() -> tryTagObject()\n-> tryTag(OBJECT_TAG_JAVA_PROXY) [mFlags |= 0x10000 (acq_rel)]
+end
+
+group #F0FDF4 階段二：強引用歸零但弱引用仍存（OBJECT_LIFETIME_WEAK 保活）
+  JNI -> Impl : ~BinderProxyNativeData() -> untag(OBJECT_TAG_JAVA_PROXY)\n[若未 untag 即銷毀物件 -> ~RefBase 觸發 RBSAN FATAL]
+  PS -> BP : 最後一個 sp<BpBinder> 釋放 -> decStrong()
+  BP -> BP : onLastStrongRef() -> decStrongHandle(handle) [BC_RELEASE] + 清理死亡通知
+  note right of BP : 因 OBJECT_LIFETIME_WEAK，不執行 delete this；\nBpBinder 本體在仍有 wp<BpBinder> 時繼續存活
+end
+
+group #FFF7ED 階段三：從句柄表無鎖競爭復活（attemptIncWeak + force_set）
+  PS -> PS : getStrongProxyForHandle(handle) [持有 mLock]
+  PS -> Impl : e->refs->attemptIncWeak(this) [CAS mWeak > 0]
+  alt attemptIncWeak 成功 (BpBinder 尚未進入 ~BpBinder)
+    PS -> BP : result.force_set(b) -> forceIncStrong() [mStrong: 0 -> 1]
+    BP -> Drv : onFirstRef() -> incStrongHandle(handle) [重新 BC_ACQUIRE]
+    PS -> Impl : e->refs->decWeak(this) [退還臨時弱引用]
+  else attemptIncWeak 失敗 (mWeak == 0，物件已進入析構)
+    PS -> BP : 建立全新 BpBinder 取代句柄表項
+  end
+end
+
+group #F5F3FF 階段四：wp::promote() 遠端復活 vs 最終銷毀
+  PS -> Impl : wp<BpBinder>::promote() -> attemptIncStrong()
+  Impl -> BP : onIncStrongAttempted(FIRST_INC_STRONG)
+  BP -> Drv : attemptIncStrongHandle(handle) [BC_ATTEMPT_ACQUIRE]
+  alt 最後一個弱引用亦歸零 (decWeak: mWeak 1 -> 0)
+    Impl -> BP : onLastWeakRef() -> ANDROID_DELETE(RefBase, mBase)
+    BP -> PS : ~BpBinder() -> expungeHandle(handle, this) [取得 mLock 清空句柄表]
+    BP -> Drv : decWeakHandle(handle) [BC_DECREFS 釋放核心弱引用]
+    BP -> Impl : ~RefBase() [檢核 RBSAN == 0 且 mWeak == 0] -> ANDROID_DELETE(weakref_impl, mRefs)
+  end
+end
+@enduml

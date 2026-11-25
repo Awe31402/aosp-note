@@ -1,0 +1,92 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "呼叫端\n(觀察者 / 快取)" as Caller
+participant "wp<T>\n(RefBase.h)" as WP
+participant "sp<T>\n(result)" as SP
+participant "weakref_impl\n(m_refs)" as Impl
+participant "T : RefBase\n(mBase)" as Base
+
+group #EFF6FF 階段一：建立弱指標（由 sp 或 fromExisting）
+  alt 由 sp<T> 建立（推薦）
+    Caller -> WP : wp<T> w(spObj)
+    WP -> Base : createWeak(&w)
+    Base -> Impl : incWeak(&w) -> mWeak.fetch_add(1, relaxed)
+    Impl --> WP : 回傳 mRefs (存入 m_refs)
+  else 由內部裸指標建立（fromExisting）
+    Caller -> WP : wp<T>::fromExisting(this)
+    WP -> Base : getWeakRefs()
+    WP -> Impl : incWeakRequireWeak(this) -> mWeak.fetch_add(1, relaxed)
+    note right of Impl : 若舊 mWeak <= 0 立即 LOG_ALWAYS_FATAL
+  end
+end
+
+group #F0FDF4 階段二：wp::promote() 與 attemptIncStrong()
+  Caller -> WP : sp<T> s = w.promote()
+  WP -> SP : 建構空 sp<T> result (m_ptr = nullptr)
+  WP -> Impl : m_refs->attemptIncStrong(&result)
+  Impl -> Impl : incWeak(&result) [先鎖住弱計數]
+  Impl -> Impl : curCount = mStrong.load(relaxed)
+
+  alt Fast Path: curCount > 0 && curCount != INITIAL_STRONG_VALUE
+    Impl -> Impl : while CAS(curCount -> curCount+1, relaxed)
+    Impl --> WP : return true
+  else Slow Path: OBJECT_LIFETIME_STRONG
+    alt curCount <= 0 (最後一個強引用已釋放)
+      Impl -> Impl : decWeak(&result)
+      Impl --> WP : return false
+    else curCount == INITIAL_STRONG_VALUE (從未有強引用)
+      Impl -> Impl : while (curCount > 0) CAS(curCount -> curCount+1, relaxed)
+      alt 並發期間被其他執行緒銷毀 (curCount <= 0)
+        Impl -> Impl : decWeak(&result)
+        Impl --> WP : return false
+      else CAS 成功
+        Impl -> Impl : 若 curCount == INITIAL_STRONG_VALUE -> fetch_sub(INITIAL_STRONG_VALUE)\n(17 不再呼叫 onFirstRef)
+        Impl --> WP : return true
+      end
+    end
+  else Slow Path: OBJECT_LIFETIME_WEAK (物件受 mWeak 保護仍活著)
+    Impl -> Base : onIncStrongAttempted(FIRST_INC_STRONG, &result)
+    alt 回傳 false (如遠端 Binder 已死)
+      Impl -> Impl : decWeak(&result)
+      Impl --> WP : return false
+    else 回傳 true (允許復活)
+      Impl -> Impl : curCount = mStrong.fetch_add(1, relaxed)
+      opt curCount != 0 && curCount != INITIAL_STRONG_VALUE (並發升級補償)
+        Impl -> Base : onLastStrongRef(&result) [撤銷多餘副作用]
+      end
+      opt curCount == INITIAL_STRONG_VALUE
+        Impl -> Impl : fetch_sub(INITIAL_STRONG_VALUE, relaxed)
+      end
+      Impl --> WP : return true
+    end
+  end
+
+  opt attemptIncStrong == true
+    WP -> SP : result.set_pointer(m_ptr)
+  end
+  WP --> Caller : 回傳 result (NRVO；失敗時為 nullptr)
+end
+
+group #FFF7ED 階段三：地址重用 (ABA) 安全比較與析構
+  Caller -> WP : wp1 == wp2 或 wp1 == sp2
+  WP -> WP : 比對 m_refs == o.m_refs (或 o->getWeakRefs())\n即使舊物件釋放後同位址配置新物件，m_refs 仍不同 -> false
+  Caller -> WP : ~wp() / clear()
+  WP -> Impl : m_refs->decWeak(this) (歸零時依生命週期回收 weakref_impl 或 mBase)
+end
+@enduml

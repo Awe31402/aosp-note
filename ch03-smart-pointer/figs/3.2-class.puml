@@ -1,0 +1,84 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam ClassBackgroundColor #F8FAFC
+skinparam ClassBorderColor #334155
+skinparam ClassHeaderBackgroundColor #E2E8F0
+skinparam ArrowColor #1E293B
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+class "sp<T>" as sp <<StrongPointer.h>> {
+  -m_ptr : T*
+  +{static} make(args...) : sp<T>
+  +{static} fromExisting(other : T*) : sp<T>
+  +force_set(other : T*) : void
+  +~sp()
+}
+
+class RefBase <<RefBase.h>> {
+  -mRefs : weakref_impl* const
+  +OBJECT_LIFETIME_STRONG = 0x0000
+  +OBJECT_LIFETIME_WEAK = 0x0001
+  +OBJECT_TAG_JAVA_PROXY = 0x10000
+  +incStrong(id) : void
+  +incStrongRequireStrong(id) : void
+  +decStrong(id) : void
+  +forceIncStrong(id) : void
+  +createWeak(id) : weakref_type*
+  +getWeakRefs() : weakref_type*
+  #RefBase()
+  #virtual ~RefBase()
+  #extendObjectLifetime(mode) : void
+  #virtual onFirstRef() : void
+  #virtual onLastStrongRef(id) : void
+  #virtual onIncStrongAttempted(flags, id) : bool
+  #virtual onLastWeakRef(id) : void
+}
+
+class "RefBase::weakref_type" as weakref_type <<RefBase.h>> {
+  +refBase() : RefBase*
+  +incWeak(id) : void
+  +incWeakRequireWeak(id) : void
+  +decWeak(id) : void
+  +attemptIncStrong(id) : bool
+  +attemptIncWeak(id) : bool
+  +getWeakCount() : int32_t
+  +tag(tag) : void
+  +tryTag(tag) : bool
+  +untag(tag) : void
+}
+
+class "RefBase::weakref_impl" as weakref_impl <<RefBase.cpp>> {
+  +mStrong : std::atomic<int32_t>
+  +mWeak : std::atomic<int32_t>
+  +mBase : RefBase* const
+  +mFlags : std::atomic<int32_t>
+  +weakref_impl(base : RefBase*)
+  +addStrongRef(id) / removeStrongRef(id)
+  +addWeakRef(id) / removeWeakRef(id)
+  +renameStrongRefId / renameWeakRefId
+}
+
+sp ..> RefBase : incStrong / incStrongRequireStrong\ndecStrong / forceIncStrong
+RefBase *--> weakref_impl : mRefs (ANDROID_NEW)
+weakref_type <|-- weakref_impl
+weakref_impl --> RefBase : mBase (反向指標)
+
+note right of weakref_impl
+  獨立堆配置影子控制塊：
+  - 初始 mStrong = INITIAL_STRONG_VALUE (1 << 28)
+  - 初始 mWeak = 0
+  - 初始 mFlags = OBJECT_LIFETIME_STRONG (0)
+  - OBJECT_LIFETIME_STRONG 下壽命長於 RefBase 本體
+end note
+
+note bottom of RefBase
+  RefBase.h 於 namespace std 攔截：
+  std::make_shared<T> / std::make_unique<T>
+  (static_assert "Must use RefBase with sp<>")
+end note
+@enduml

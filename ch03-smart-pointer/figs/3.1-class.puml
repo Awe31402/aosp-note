@@ -1,0 +1,91 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam ClassBackgroundColor #F8FAFC
+skinparam ClassBorderColor #334155
+skinparam ClassHeaderBackgroundColor #E2E8F0
+skinparam ArrowColor #1E293B
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+class "sp<T>" as sp <<StrongPointer.h>> {
+  -m_ptr : T*
+  +sp()
+  +{static} make(args...) : sp<T>
+  +{static} makeNoThrow(args...) : sp<T>
+  +{static} fromExisting(other : T*) : sp<T>
+  +{static} cast(other : const sp~<U>&) : sp<T>
+  +sp(other : const sp<T>&)
+  +sp(other : sp<T>&&)
+  +operator=(other : const sp<T>&) : sp<T>&
+  +operator=(other : sp<T>&&) : sp<T>&
+  +clear() : void
+  +release() : T*
+  +get() : T*
+  +~sp()
+  -set_pointer(ptr : T*) : void
+}
+
+class "LightRefBase<T>" as LRB <<LightRefBase.h (CRTP)>> {
+  -mCount : mutable std::atomic<int32_t>
+  +LightRefBase()
+  +incStrong(id) : void
+  +incStrongRequireStrong(id) : void
+  +decStrong(id) : void
+  +getStrongCount() : int32_t
+  # ~LightRefBase()
+  -{static} renameRefs(n, renamer) : void
+  -{static} renameRefId(ref, old_id, new_id) : void
+}
+
+class VirtualLightRefBase <<LightRefBase.h>> {
+  +virtual ~VirtualLightRefBase() = default
+}
+
+class NativeHandle <<libutils/NativeHandle.h>> {
+  -mHandle : native_handle_t*
+  -mOwnsHandle : bool
+  +{static} create(handle, ownsHandle) : sp<NativeHandle>
+  +handle() : const native_handle_t*
+  -NativeHandle(handle, ownsHandle)
+  -~NativeHandle()
+}
+
+class VirtualRefBasePtr <<Java (frameworks/base)>> {
+  -mNativePtr : long
+  +VirtualRefBasePtr(ptr : long)
+  +get() : long
+  +release() : void
+  #finalize() : void
+  -{static} nIncStrong(ptr : long) : void
+  -{static} nDecStrong(ptr : long) : void
+}
+
+class "SPLightFoo" as SPLightFoo <<StrongPointer_test.cpp>> {
+  -mDeleted : bool*
+  +SPLightFoo(deleted_check : bool*)
+  +~SPLightFoo()
+}
+
+sp ..> LRB : 鴨子型別協定\nincStrong / incStrongRequireStrong / decStrong
+LRB <|-- VirtualLightRefBase : T = VirtualLightRefBase
+LRB <|-- NativeHandle : T = NativeHandle\n(friend LightRefBase & sp)
+VirtualLightRefBase <|-- SPLightFoo : virtual public
+VirtualRefBasePtr ..> VirtualLightRefBase : JNI nIncStrong / nDecStrong
+
+note right of LRB
+  無虛函式表（省 8B vptr）
+  decStrong 歸零時執行：
+  1. fetch_sub(1, release) == 1
+  2. atomic_thread_fence(acquire)
+  3. delete static_cast<const T*>(this)
+end note
+
+note bottom of sp
+  開啟 ANDROID_UTILS_REF_BASE_DISABLE_IMPLICIT_CONSTRUCTION 時
+  停用 sp(T*) / operator=(T*) 隱式裸指標轉換
+end note
+@enduml

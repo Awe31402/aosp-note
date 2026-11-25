@@ -1,0 +1,76 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "呼叫端" as Caller
+participant "sp<Foo>\n(StrongPointer.h)" as SP
+participant "Foo : RefBase\n(RefBase.cpp)" as RB
+participant "weakref_impl\n(mRefs)" as Impl
+
+group #EFF6FF 階段一：sp<Foo>::make 建立與首次強引用
+  Caller -> SP : sp<Foo>::make(...)
+  SP -> RB : ANDROID_NEW(Foo, ...) -> RefBase()
+  RB -> Impl : ANDROID_NEW(weakref_impl, this)\n[mStrong=INITIAL_STRONG_VALUE, mWeak=0, mFlags=STRONG]
+  SP -> RB : t->incStrong(t)
+  RB -> Impl : incWeak(t) -> mWeak.fetch_add(1, relaxed) [0 -> 1]
+  RB -> Impl : mStrong.fetch_add(1, relaxed) [c = INITIAL_STRONG_VALUE]
+  RB -> RB : check_not_on_stack(this)
+  RB -> Impl : mStrong.fetch_sub(INITIAL_STRONG_VALUE, relaxed) [-> 1]
+  RB -> RB : onFirstRef()
+  SP --> Caller : sp1 (mStrong=1, mWeak=1)
+end
+
+group #F0FDF4 階段二：最後一個 sp 離開作用域（decStrong）
+  Caller -> SP : ~sp()
+  SP -> RB : decStrong(this)
+  RB -> Impl : mStrong.fetch_sub(1, memory_order_release) [c = 1]
+  RB -> RB : std::atomic_thread_fence(memory_order_acquire)
+  RB -> RB : onLastStrongRef(id)
+  alt (mFlags & OBJECT_LIFETIME_MASK) == OBJECT_LIFETIME_STRONG
+    RB -> RB : ANDROID_DELETE(RefBase, this) -> ~Foo() -> ~RefBase()
+    note right of RB
+      ~RefBase() 檢核：
+      1. RBSAN: (flags & OBJECT_TAG_MASK) == 0
+      2. strongs == 0 (非零即 double-owned fatal)
+      3. 不刪除 mRefs，留待下方 decWeak 清理
+    end note
+  else OBJECT_LIFETIME_WEAK
+    note right of RB : 跳過 delete this，物件本體留待最後一個 wp 消失時銷毀
+  end
+end
+
+group #FFF7ED 階段三：配對遞減弱計數與兩段式收尾（decWeak）
+  RB -> Impl : refs->decWeak(id)
+  Impl -> Impl : mWeak.fetch_sub(1, memory_order_release)
+  alt 舊 mWeak != 1 (仍有外部 wp<> 存活)
+    Impl --> Caller : 提早返回（STRONG 模式下 weakref_impl 續存；WEAK 模式下物件續存）
+  else 舊 mWeak == 1 (最後一個弱引用也消失)
+    Impl -> Impl : atomic_thread_fence(memory_order_acquire)
+    alt OBJECT_LIFETIME_STRONG
+      alt mStrong == INITIAL_STRONG_VALUE (從未有強引用)
+        Impl -> Impl : 僅印出 ALOGW，不再 delete mBase (與 2.3 關鍵差異)
+      else mStrong == 0 (正常曾有強引用)
+        Impl -> Impl : ANDROID_DELETE(weakref_impl, impl)
+      end
+    else OBJECT_LIFETIME_WEAK
+      Impl -> RB : onLastWeakRef(id)
+      Impl -> RB : ANDROID_DELETE(RefBase, impl->mBase) -> ~Foo() -> ~RefBase()
+      RB -> Impl : ~RefBase() 確認 mWeak == 0 -> ANDROID_DELETE(weakref_impl, mRefs)
+    end
+  end
+end
+@enduml

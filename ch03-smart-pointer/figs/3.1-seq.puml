@@ -1,0 +1,75 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "呼叫端\n(Caller / Java)" as Caller
+participant "NativeHandle /\nVirtualRefBasePtr" as Wrapper
+participant "sp<T>\n(StrongPointer.h)" as SP
+participant "LightRefBase<T> /\nVirtualLightRefBase" as LRB
+participant "錯誤報告\n(LightRefBase.cpp /\nStrongPointer.cpp)" as Err
+
+group #EFF6FF 階段一：工廠建立（sp<T>::make）
+  Caller -> Wrapper : NativeHandle::create(handle, ownsHandle)
+  Wrapper -> SP : sp<NativeHandle>::make(handle, ownsHandle)
+  SP -> LRB : ANDROID_NEW(NativeHandle, ...) -> LightRefBase() [mCount = 0]
+  SP -> LRB : t->incStrong(t) -> mCount.fetch_add(1, relaxed) [0 -> 1]
+  SP --> Wrapper : result (NRVO，無多餘計數加減)
+  Wrapper --> Caller : sp1 (mCount = 1)
+end
+
+group #F0FDF4 階段二：複製、移動、fromExisting 與賦值
+  Caller -> SP : sp2(sp1) [複製建構]
+  SP -> LRB : incStrong(&sp2) -> fetch_add(1, relaxed) [1 -> 2]
+
+  Caller -> SP : sp3 = std::move(sp2) [移動建構]
+  SP -> SP : sp3.m_ptr = sp2.m_ptr; sp2.m_ptr = nullptr (零原子操作，mCount 維持 2)
+
+  Caller -> SP : sp<T>::fromExisting(rawPtr)
+  SP -> LRB : incStrongRequireStrong(rawPtr) -> fetch_add(1, relaxed)
+  alt 原 mCount == 0 (尚未被 sp 擁有)
+    LRB -> Err : LightRefBase_reportIncStrongRequireStrongFailed(this) -> LOG_ALWAYS_FATAL
+  else 原 mCount > 0 (合法已受管物件)
+    LRB --> SP : mCount [2 -> 3]
+  end
+
+  Caller -> SP : sp1 = other [賦值運算子]
+  SP -> SP : volatile 讀 oldPtr -> other->incStrong -> oldPtr->decStrong
+  SP -> SP : volatile 重讀 m_ptr 比對 oldPtr
+  opt oldPtr != m_ptr (偵測並發修改同一 sp 實例)
+    SP -> Err : sp_report_race() -> LOG_ALWAYS_FATAL
+  end
+end
+
+group #FFF7ED 階段三：離開作用域與最後一次釋放（decStrong）
+  Caller -> SP : ~sp() / sp.clear()
+  SP -> LRB : m_ptr->decStrong(this)
+  LRB -> LRB : mCount.fetch_sub(1, memory_order_release)
+  alt 舊值 == 1 (最後一個強指標釋放)
+    LRB -> LRB : std::atomic_thread_fence(memory_order_acquire)
+    LRB -> Wrapper : delete static_cast<const T*>(this) -> ~NativeHandle() (close & delete handle)
+  else 舊值 > 1
+    LRB --> SP : 僅遞減計數，物件維持存活
+  end
+end
+
+group #F5F3FF 階段四：跨 JNI 路徑（VirtualRefBasePtr）
+  Caller -> Wrapper : new VirtualRefBasePtr(nativePtr)
+  Wrapper -> LRB : JNI nIncStrong -> VirtualLightRefBase::incStrong(0)
+  Caller -> Wrapper : release() / finalize()
+  Wrapper -> LRB : JNI nDecStrong -> VirtualLightRefBase::decStrong(0) (歸零時透過虛解構子析構子類)
+end
+@enduml
