@@ -1,0 +1,49 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam ArrowColor #1E293B
+skinparam PackageBorderColor #64748B
+skinparam RectangleBackgroundColor #F8FAFC
+skinparam RectangleBorderColor #334155
+skinparam LegendBackgroundColor #FFFDE7
+skinparam LegendBorderColor #D97706
+
+title Android 17 多 Domain 隔離機制：binder_device -> binder_context -> binder_proc
+
+package "/dev/binder 通訊域 (Framework / AIDL)" as D1 #EFF6FF {
+  rectangle "inode: /dev/binderfs/binder\n[binderfs.c:115, 205]\ni_private 指向此 device" as I1
+  rectangle "struct binder_device (binder)\n[binder_internal.h:34]" as Dev1 {
+    rectangle "struct binder_context\n[binder_internal.h:19]\n- name = 'binder'\n- binder_context_mgr_node\n- binder_context_mgr_uid\n- context_mgr_node_lock" as Ctx1 #DBEAFE
+  }
+  rectangle "struct binder_proc (App / Client)\n[binder_open: binder.c:6360, 6368]\nfilp->private_data = proc\nproc->context = &device->context" as Proc1
+  rectangle "servicemanager\nbinder_node (handle 0)\n[binder_ioctl_set_ctx_mgr: binder.c:5815]" as SM1 #DCFCE7
+
+  I1 -down-> Dev1 : inode->i_private
+  Proc1 -up-> Ctx1 : proc->context
+  Ctx1 -down-> SM1 : binder_context_mgr_node
+  Proc1 .right.> SM1 : handle == 0 交易\n[binder.c:3436]
+}
+
+package "/dev/hwbinder 通訊域 (Vendor / HIDL)" as D2 #FFF7ED {
+  rectangle "inode: /dev/binderfs/hwbinder\n[binderfs.c:115, 205]\ni_private 指向此 device" as I2
+  rectangle "struct binder_device (hwbinder)\n[binder_internal.h:34]" as Dev2 {
+    rectangle "struct binder_context\n[binder_internal.h:19]\n- name = 'hwbinder'\n- binder_context_mgr_node\n- binder_context_mgr_uid\n- context_mgr_node_lock" as Ctx2 #FFEDD5
+  }
+  rectangle "struct binder_proc (HAL / Client)\n[binder_open: binder.c:6360, 6368]\nfilp->private_data = proc\nproc->context = &device->context" as Proc2
+  rectangle "hwservicemanager\nbinder_node (handle 0)\n[binder_ioctl_set_ctx_mgr: binder.c:5815]" as SM2 #DCFCE7
+
+  I2 -down-> Dev2 : inode->i_private
+  Proc2 -up-> Ctx2 : proc->context
+  Ctx2 -down-> SM2 : binder_context_mgr_node
+  Proc2 .right.> SM2 : handle == 0 交易\n[binder.c:3436]
+}
+
+legend bottom
+  同一行程（如 system_server）若同時 open('/dev/binder') 與 open('/dev/hwbinder')，
+  兩個 fd 各自對應獨立的 binder_proc，分別連往不同 binder_context，
+  彼此的 handle 空間與 binder_context_mgr_node 完全隔離、互不相通。
+  （對照 Android 2.3：只有單一全域變數 binder_context_mgr_node，無法切分多 domain。）
+end legend
+@enduml
