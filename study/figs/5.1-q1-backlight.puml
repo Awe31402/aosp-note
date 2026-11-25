@@ -1,0 +1,61 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 300
+skinparam ParticipantPadding 14
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "system_server\n(PID 1329 / Client)\nmmap: 7783245000 r--p" as Client
+participant "Kernel Binder 驅動\n(binder.c / binder_alloc.c)" as Kernel
+participant "lights-service\n(PID 951 / Server)\nmmap: 7aff902000 r--p" as Server
+
+note over Client, Server
+  實機事前狀態（/dev/binderfs/binder_logs）：
+  - Client (1329)：ref 2978: desc 11 -> node 462
+  - Server (951)：node 462 (cookie = 0xb400007d3fa07438 指向 Lights 物件)，thread 951 睡眠待命 (l 12)
+end note
+
+group #EFF6FF 階段一：Client (1329) 打包參數並發送 BC_TRANSACTION
+  Client -> Client : LightsService 呼叫 AIDL Proxy\nsetLightState(id=BACKLIGHT, HwLightState)\n將介面名與參數序列化進 Parcel
+  Client -> Kernel : ioctl(BINDER_WRITE_READ) 送出 BC_TRANSACTION\n(target.handle = 11, code = 1, data = Parcel)
+  activate Kernel
+  note over Client : Client 執行緒在 binder_thread_read 阻塞等待 BR_REPLY
+end
+
+group #F0FDF4 階段二：Kernel 查表定位、一次拷貝並喚醒 thread 951
+  Kernel -> Kernel : 以 desc 11 查 1329 的 refs_by_desc 紅黑樹\n-> ref 2978 -> node 462\n得知目標 PID 951、cookie = 0xb400007d3fa07438
+  Kernel -> Kernel : binder_alloc_new_buf() 在 PID 951 收件箱\n(7aff902000-7affa00000) 切出緩衝區（如 0x7aff902000）
+  Kernel -> Kernel : 一次拷貝將 Parcel (Payload + Offsets + Extra)\n寫入 PID 951 對應實體頁
+  Kernel -> Server : 掛入 PID 951 的 todo 佇列\n從 waiting_threads 喚醒睡著的 thread 951
+  activate Server
+  deactivate Kernel
+end
+
+group #FFF7ED 階段三：Server (951) 靠 cookie + code 驅動 setLightState()
+  Server -> Server : thread 951 收到 BR_TRANSACTION：\ncookie = 0xb400007d3fa07438\ncode = 1 (TRANSACTION_setLightState)\ndata.ptr.buffer = 0x7aff902000 (r--p 唯讀)
+  Server -> Server : libbinder_ndk 將 cookie 轉回本地 Lights 物件\n-> BnLights::onTransact(code = 1)
+  Server -> Server : 自 0x7aff902000 讀出 id 與 HwLightState\n-> 呼叫 Lights::setLightState() 控制硬體背光
+end
+
+group #F8FAFC 階段四：回覆結果與歸還緩衝區
+  Server -> Kernel : ioctl 送出 BC_REPLY (OK)
+  activate Kernel
+  Kernel -> Kernel : 一次拷貝回覆寫入 1329 收件箱 (7783245000-...)\n並喚醒阻塞中的 1329 執行緒
+  Kernel --> Client : 下發 BR_REPLY（Client 讀完結果）
+  deactivate Kernel
+  Server -> Kernel : Parcel 析構 -> 送出 BC_FREE_BUFFER(0x7aff902000)\n通知 Kernel 歸還緩衝區（接續 Q1-2）
+  deactivate Server
+  Client -> Kernel : Client 讀完回覆後同樣送出 BC_FREE_BUFFER\n歸還自家收件箱緩衝區
+end
+@enduml

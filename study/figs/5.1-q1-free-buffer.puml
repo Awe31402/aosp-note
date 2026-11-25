@@ -1,0 +1,83 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 300
+skinparam ParticipantPadding 12
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Userspace\n(Parcel / IPCThreadState)" as User
+participant "Binder 核心驅動\n(binder.c)" as Binder
+participant "緩衝區配置器\n(binder_alloc.c)" as Alloc
+participant "全域 LRU & VM Shrinker\n(binder_freelist)" as LRU
+
+group #EFF6FF 階段一：Userspace 歸還緩衝區與防 Double-Free
+  note over User
+    收到 BR_TRANSACTION / BR_REPLY 時已透過
+    Parcel::ipcSetDataReference() 綁定釋放回呼
+    [IPCThreadState.cpp:1215, 1506]
+  end note
+  User -> User : Parcel 析構 -> IPCThreadState::freeBuffer()\n寫入 BC_FREE_BUFFER + data_ptr\n[IPCThreadState.cpp:1853-1865]
+  User -> Binder : ioctl(BINDER_WRITE_READ)\n-> binder_thread_write() case BC_FREE_BUFFER\n[binder.c:4538-4570]
+  activate Binder
+
+  Binder -> Alloc : binder_alloc_prepare_to_free(&proc->alloc, data_ptr)\n[binder_alloc.c:129-175]
+  activate Alloc
+  Alloc -> Alloc : 鎖 alloc->mutex，查 allocated_buffers 紅黑樹
+  alt buffer->allow_user_free == 0（尚未交付或已釋放過）
+    Alloc --> Binder : return ERR_PTR(-EPERM)（擋下 Double-Free / UAF）
+  else buffer->allow_user_free == 1
+    Alloc -> Alloc : 鎖內原子清零 buffer->allow_user_free = 0
+    Alloc --> Binder : return buffer（釋放 alloc->mutex）
+  end
+  deactivate Alloc
+end
+
+group #F0FDF4 階段二：清理交易、前後合併空閒塊與掛入 LRU
+  Binder -> Binder : binder_free_buf(proc, thread, buffer, false)\n[binder.c:4326-4367]
+  note right of Binder
+    1. 鎖 proc->inner_lock 斷開 buffer->transaction
+    2. 若為 async 交易：從 target_node->async_todo
+       取出下一筆推進 proc->todo 並喚醒處理
+    3. binder_release_entire_buffer() 清理引用與待補 fd
+  end note
+
+  Binder -> Alloc : binder_alloc_free_buf(&proc->alloc, buffer)\n[binder_alloc.c:876-894]
+  activate Alloc
+  opt buffer->clear_on_free == 1 (TF_CLEAR_BUF)
+    Alloc -> Alloc : 鎖外呼叫 binder_alloc_clear_buf() 逐頁清零\n[binder_alloc.c:849, 888]
+  end
+
+  Alloc -> Alloc : 鎖 alloc->mutex -> binder_free_buf_locked()\n[binder_alloc.c:755-806]
+  Alloc -> Alloc : 若 async 則歸還 free_async_space += buffer_size
+  Alloc -> LRU : binder_lru_freelist_add()\n將未與鄰居共用的完整頁掛入全域 binder_freelist\n[binder_alloc.c:193, 770]
+  Alloc -> Alloc : rb_erase 出 allocated_buffers、設 buffer->free = 1
+  Alloc -> Alloc : 檢查 next / prev 是否空閒：\nrb_erase 出 free_buffers + binder_delete_free_buffer()\n（順便補將合併後釋出的邊界頁送進 LRU）\n[binder_alloc.c:728-753, 775-795]
+  Alloc -> Alloc : binder_insert_free_buffer() 插回合併後大空閒塊\n解鎖 alloc->mutex
+  Alloc --> Binder : return
+  deactivate Alloc
+  deactivate Binder
+end
+
+group #FFF7ED 階段三：實體頁後續命運（複用 vs 延遲回收）
+  alt 回收前有新交易分配到同區段
+    Alloc -> LRU : binder_lru_freelist_del()\n直接摘回已裝入熱頁複用（省 alloc_page 與 TLB flush）
+  else 系統面臨記憶體壓力
+    LRU -> Alloc : VM Shrinker 呼叫 binder_shrink_scan()\n-> binder_alloc_free_page()\n[binder_alloc.c:1151-1245]
+    activate Alloc
+    Alloc -> Alloc : trylock VMA 與 alloc->mutex、清空 alloc->pages[index]\nlist_lru_isolate() 移出 LRU
+    Alloc -> Alloc : zap_page_range_single() 清目標行程 PTE\nbinder_free_page() (__free_page) 還給 buddy allocator
+    deactivate Alloc
+  end
+end
+@enduml

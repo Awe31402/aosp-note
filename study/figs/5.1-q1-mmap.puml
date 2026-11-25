@@ -1,0 +1,61 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 300
+skinparam ParticipantPadding 12
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Userspace\n(ProcessState.cpp)" as User
+participant "Kernel VFS /\nmm" as VFS
+participant "Binder 驅動\n(binder.c)" as Binder
+participant "記憶體配置器\n(binder_alloc.c)" as Alloc
+
+group #EFF6FF Q1-1：唯讀 mmap 建立與權限防堵
+  User -> VFS : mmap(nullptr, BINDER_VM_SIZE, PROT_READ,\nMAP_PRIVATE | MAP_NORESERVE, fd, 0)\n[ProcessState.cpp:48, 625]
+  VFS -> Binder : binder_mmap(filp, vma)\n[binder.c:6301-6325]
+  activate Binder
+
+  alt proc->tsk != current->group_leader
+    Binder --> User : return -EINVAL（禁止跨行程映射）
+  else vma->vm_flags & FORBIDDEN_MMAP_FLAGS (VM_WRITE) [binder.c:103, 6314]
+    Binder --> User : return -EPERM（拒絕可寫映射）
+  else 檢查通過
+    Binder -> Binder : vm_flags_mod(vma, VM_DONTCOPY | VM_MIXEDMAP, VM_MAYWRITE)\n[binder.c:6319]
+    note right of Binder
+      清除 VM_MAYWRITE：禁止事後 mprotect 改為可寫
+      加上 VM_DONTCOPY：fork 不複製給子行程
+      加上 VM_MIXEDMAP：允許後續 vm_insert_page 裝頁
+    end note
+    Binder -> Binder : vma->vm_ops = &binder_vm_ops\n(.fault = binder_vm_fault 恆回 VM_FAULT_SIGBUS)\n[binder.c:6289-6299, 6321]
+
+    Binder -> Alloc : binder_alloc_mmap_handler(&proc->alloc, vma)\n[binder_alloc.c:910-961]
+    activate Alloc
+    Alloc -> Alloc : 鎖 binder_alloc_mmap_lock\n確保只 mmap 一次並上限截斷於 SZ_4M
+    Alloc -> Alloc : kvcalloc() 配置 pages[] 指標陣列（全為 NULL）\n不預配實體頁、不建 kernel VA
+    Alloc -> Alloc : kzalloc() 建初始空閒 binder_buffer\n插進 alloc->buffers 與 free_buffers 紅黑樹\nfree_async_space = buffer_size / 2
+    Alloc -> Alloc : binder_alloc_set_mapped(alloc, true) (smp_store_release)
+    Alloc --> Binder : return 0
+    deactivate Alloc
+    Binder --> User : return mVMStart（r--p 唯讀收件箱）
+  end
+  deactivate Binder
+end
+
+group #FEF2F2 若 Userspace 嘗試非法操作
+  User -> VFS : mprotect(mVMStart, ..., PROT_WRITE)
+  VFS --> User : -EACCES（因 VM_MAYWRITE 已被清除）
+  User -> Binder : 越界存取未裝頁位址 -> page fault -> binder_vm_fault()
+  Binder --> User : VM_FAULT_SIGBUS（禁止透過缺頁異常觸發配頁）
+end
+@enduml
