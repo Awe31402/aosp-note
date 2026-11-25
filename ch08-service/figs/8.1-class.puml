@@ -1,0 +1,105 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam ClassBackgroundColor #F8FAFC
+skinparam ClassBorderColor #334155
+skinparam ClassHeaderBackgroundColor #E2E8F0
+skinparam ArrowColor #1E293B
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+class ActivityManagerService <<server/am>> {
+  +mServices : ActiveServices
+  +startService(...) : ComponentName
+  +bindServiceInstance(...) : int
+  +publishService(token, bindToken, service) : void
+  +serviceDoneExecuting(...) : void
+}
+
+class ActiveServices <<server/am>> {
+  +mServiceMap : SparseArray<ServiceMap>
+  +mPendingServices : ArrayList<ServiceRecord>
+  +mRestartingServices : ArrayList<ServiceRecord>
+  +mDestroyingServices : ArrayList<ServiceRecord>
+  +startServiceLocked(...) : ComponentName
+  +bindServiceLocked(...) : int
+  +bringUpServiceLocked(...) : String
+  +realStartServiceLocked(...) : void
+  +publishServiceLocked(...) : void
+  +attachApplicationLocked(...) : boolean
+}
+
+class ServiceMap <<per-user Handler>> {
+  +mUserId : int
+  +mServicesByInstanceName : ArrayMap<ComponentName, ServiceRecord>
+  +mServicesByIntent : ArrayMap<FilterComparison, ServiceRecord>
+  +mDelayedStartList : ArrayList<ServiceRecord>
+  +mStartingBackground : ArrayList<ServiceRecord>
+}
+
+class ProcessServiceRecord <<ProcessRecord.mServices>> {
+  +mApp : ProcessRecord
+  +mBoundClientUids : ArraySet<Integer>
+  +startService(record) : boolean
+  +getNumForegroundServices() : int
+}
+
+class ServiceRecord <<extends Binder>> {
+  +name : ComponentName
+  +processName : String
+  +bindings : ArrayMap<FilterComparison, IntentBindRecord>
+  -connections : ArrayMap<IBinder, ArrayList<ConnectionRecord>>
+  +pendingStarts : ArrayList<StartItem>
+  +fgRequired : boolean
+  +executeNesting : int
+  +isFgsAllowedStart() : boolean
+}
+
+class IntentBindRecord <<extends Binder (bindToken)>> {
+  +service : ServiceRecord
+  +intent : Intent.FilterComparison
+  +apps : ArrayMap<ProcessRecord, AppBindRecord>
+  +binder : IBinder
+  +requested / received / hasBound / doRebind : boolean
+}
+
+class AppBindRecord {
+  +service : ServiceRecord
+  +intent : IntentBindRecord
+  +client : ProcessRecord
+  +connections : ArraySet<ConnectionRecord>
+}
+
+class ConnectionRecord {
+  +binding : AppBindRecord
+  +activity : ActivityServiceConnectionsHolder
+  +conn : IServiceConnection
+  +clientUid : int
+}
+
+class ActivityServiceConnectionsHolder <<server/wm>> {
+  -mActivity : ActivityRecord
+  -mConnections : ArraySet<T>
+  +addConnection(c : T) : void
+}
+
+ActivityManagerService *--> ActiveServices : mServices
+ActiveServices *--> ServiceMap : mServiceMap [userId]
+ServiceMap o--> ServiceRecord : mServicesByInstanceName\nmServicesByIntent
+ProcessServiceRecord o--> ServiceRecord : running services
+ServiceRecord *--> IntentBindRecord : bindings [Intent]
+IntentBindRecord *--> AppBindRecord : apps [ProcessRecord]
+AppBindRecord *--> ConnectionRecord : connections
+ConnectionRecord --> ActivityServiceConnectionsHolder : activity (跨 AM/WM 鎖橋接)
+ServiceRecord o--> ConnectionRecord : connections [IServiceConnection.asBinder()]
+
+note right of IntentBindRecord
+  Android 17 關鍵變化：
+  IntentBindRecord 繼承 Binder，
+  直接作為 bindToken 往返於
+  scheduleBindService / publishService
+end note
+@enduml

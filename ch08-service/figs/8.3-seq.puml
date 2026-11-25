@@ -1,0 +1,52 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "客戶端 Activity\n(ContextImpl / LoadedApk)" as Client
+participant "AMS / ActiveServices\n(system_server)" as AMS
+participant "ATMS / WM\n(ActivityServiceConnectionsHolder)" as WM
+participant "同進程主執行緒\n(ActivityThread / Service)" as Thread
+
+group #EFF6FF 1. 準備 ServiceDispatcher 與發起綁定（Steps 1–3）
+  Client -> Client : ContextWrapper.bindService()\n-> ContextImpl.bindServiceCommon()\nLoadedApk.getServiceDispatcher()\n建立 ServiceDispatcher + InnerConnection (IServiceConnection.Stub)
+  Client -> AMS : IActivityManager.bindServiceInstance(\n  caller, activityToken, intent, ..., InnerConnection, long flags)
+end
+
+group #F0FDF4 2. 系統端建立四層綁定與熱路徑啟動 Service（Steps 4–5）
+  AMS -> WM : mAtmInternal.getServiceConnectionsHolder(activityToken)
+  WM --> AMS : ActivityServiceConnectionsHolder<ConnectionRecord>
+  AMS -> AMS : retrieveServiceLocked() -> ServiceRecord s\ns.retrieveAppBindingLocked() -> IntentBindRecord / AppBindRecord b\n建立 ConnectionRecord c，掛入 s、b、activity、clientPsr、mServiceConnections
+  AMS -> AMS : c.hasFlag(BIND_AUTO_CREATE)\n-> bringUpServiceInnerLocked()\n命中同進程 app != null && app.isThreadReady()\n-> realStartServiceLocked()
+  AMS ->> Thread : IApplicationThread.scheduleCreateService(s, info, ...) [oneway]
+  AMS -> AMS : realStartServiceLocked()\n-> requestServiceBindingsLocked()\n-> requestServiceBindingLocked()\nb.requested = true, bumpServiceExecutingLocked("bind")
+  AMS ->> Thread : IApplicationThread.scheduleBindService(s, b [bindToken], intent, false, ...) [oneway]
+  AMS --> Client : 返回 1 (true)
+end
+
+group #FEF3C7 3. 同進程依序執行 onCreate 與 onBind 並發布 IBinder（Steps 6–7）
+  Thread -> Thread : H.CREATE_SERVICE -> handleCreateService()\n-> Service.onCreate()\n-> serviceDoneExecuting(ANON)
+  Thread -> Thread : H.BIND_SERVICE -> handleBindService()\n-> IBinder binder = Service.onBind(intent)
+  Thread -> AMS : IActivityManager.publishService(token, bindToken, binder)
+end
+
+group #F5F3FF 4. 系統回調客戶端與建立死亡監聽（Steps 8–10）
+  AMS -> AMS : ActiveServices.publishServiceLocked()\nb.binder = service, b.received = true\nserviceDoneExecutingLocked() 解除 ANR 計時
+  AMS ->> Client : c.conn.connected(componentName, serviceBinder, session, false) [oneway]
+  Client -> Client : InnerConnection.connected() -> ServiceDispatcher.connected()\n透過 mActivityExecutor 或 mActivityThread.post(new RunConnection)
+  Client -> Client : RunConnection.run() -> ServiceDispatcher.doConnected()\nservice.linkToDeath(DeathMonitor)\n-> ServiceConnection.onServiceConnected(name, service, session)
+end
+@enduml

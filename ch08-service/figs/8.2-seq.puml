@@ -1,0 +1,55 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "呼叫端 App\n(ContextWrapper / ContextImpl)" as Caller
+participant "AMS / ActiveServices\n(system_server)" as AMS
+participant "ProcessList / Zygote" as Zygote
+participant "目標 Service 進程\n(ActivityThread)" as Target
+
+group #EFF6FF 1. 發起請求與系統端合規檢核（Steps 1–5）
+  Caller -> Caller : startService() / startForegroundService()\n-> startServiceCommon()\nvalidateServiceIntent() [強制顯式 Intent]
+  Caller -> AMS : IActivityManager.startService(..., requireForeground)
+  AMS -> AMS : ActiveServices.startServiceLocked()\nretrieveServiceLocked() -> ServiceRecord\nsetFgsRestrictionLocked() + OP_START_FOREGROUND\ngetAppStartModeLOSP() [BFSL 背景啟動檢查]
+  AMS -> AMS : startServiceInnerLocked()\n建立 StartItem 加入 r.pendingStarts\n背景延遲節流 (mStartingBackground / mDelayedStartList)
+end
+
+group #FEF3C7 2. 查無目標進程，冷啟動建程（Step 6）
+  AMS -> AMS : bringUpServiceInnerLocked()\ngetProcessRecordLocked(procName, uid) == null
+  AMS -> Zygote : mAm.startProcessLocked(procName, ..., hostingRecord)
+  AMS -> AMS : 若 r.fgRequired -> tempAllowlistUidLocked()\nmPendingServices.add(r)
+  AMS --> Caller : 返回 ComponentName（非阻塞，不等新進程啟動完成）
+  Zygote -> Target : fork 新進程 -> ActivityThread.main()
+end
+
+group #F0FDF4 3. 新進程附著與雙階段派發（Steps 7–9）
+  Target -> AMS : IActivityManager.attachApplication(mAppThread)
+  AMS -> AMS : finishAttachApplicationInner()\n-> ActiveServices.attachApplicationLocked()\n從 mPendingServices 取出匹配 ServiceRecord
+  AMS -> AMS : realStartServiceLocked():\nr.setProcess() + psr.startService(r)\nbumpServiceExecutingLocked("create") [設 ANR 計時]\nSyncBatchSession.triggerUpdate() [先拉升 OOM adj]
+  AMS ->> Target : IApplicationThread.scheduleCreateService(r, info, ...) [oneway]
+  AMS -> AMS : sendServiceArgsLocked():\n清空 pendingStarts -> deliveredStarts\nbumpServiceExecutingLocked("start")\n若 fgRequired -> scheduleServiceForegroundTransitionTimeoutLocked()
+  AMS ->> Target : IApplicationThread.scheduleServiceArgs(r, ParceledListSlice) [oneway]
+end
+
+group #F5F3FF 4. 新進程主執行緒實例化與回呼（Steps 10–12）
+  Target -> Target : H.CREATE_SERVICE -> handleCreateService()\nAppComponentFactory.instantiateService()\ncreateServiceBaseContext() + service.attach()\n-> Service.onCreate()
+  Target ->> AMS : serviceDoneExecuting(token, ANON, 0, 0) [oneway]
+  Target -> Target : H.SERVICE_ARGS -> handleServiceArgs()\n-> res = Service.onStartCommand(args, flags, startId)
+  Target ->> AMS : serviceDoneExecuting(token, START, startId, res) [oneway]
+  AMS -> AMS : serviceDoneExecutingLocked()\n依 START_STICKY / NOT_STICKY / REDELIVER_INTENT 更新\n遞減 executeNesting -> 移除 SERVICE_TIMEOUT_MSG
+end
+@enduml

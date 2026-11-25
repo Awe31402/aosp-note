@@ -1,0 +1,45 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "呼叫端\n(ContextImpl / LoadedApk)" as Caller
+participant "AMS / ActiveServices\n(system_server)" as AMS
+participant "ProcessList / Zygote" as Zygote
+participant "目標 Service 進程\n(ActivityThread)" as Target
+
+group #EFF6FF 情景一：新進程啟動 Service（8.2 節）
+  Caller -> AMS : startService() / startForegroundService()\n-> IActivityManager.startService(..., requireForeground)
+  AMS -> AMS : ActiveServices.startServiceLocked()\n[retrieveServiceLocked + BFSL/FGS 檢查 + pendingStarts]
+  AMS -> Zygote : bringUpServiceLocked() 未命中進程\n-> mPendingServices.add(r) + startProcessLocked()
+  Zygote -> Target : fork -> ActivityThread.main()
+  Target -> AMS : attachApplication() -> finishAttachApplicationInner()\n-> ActiveServices.attachApplicationLocked()
+  AMS -> Target : realStartServiceLocked():\n① IApplicationThread.scheduleCreateService(r, info) [oneway]\n② IApplicationThread.scheduleServiceArgs(r, ParceledListSlice) [oneway]
+  Target -> Target : H.CREATE_SERVICE -> handleCreateService() -> Service.onCreate()\nH.SERVICE_ARGS -> handleServiceArgs() -> Service.onStartCommand()
+  Target -> AMS : serviceDoneExecuting() [oneway，解除 ANR 計時]
+end
+
+group #F0FDF4 情景二：同進程綁定 Service（8.3 節）
+  Caller -> Caller : bindService() -> LoadedApk.getServiceDispatcher()\n建立 ServiceDispatcher + InnerConnection (IServiceConnection.Stub)
+  Caller -> AMS : IActivityManager.bindServiceInstance(..., InnerConnection, long flags)
+  AMS -> AMS : ActiveServices.bindServiceLocked()\n[ActivityServiceConnectionsHolder + IntentBindRecord/AppBindRecord/ConnectionRecord]
+  AMS -> Caller : BIND_AUTO_CREATE 命中同進程 -> realStartServiceLocked()\n① scheduleCreateService(r, info) -> Service.onCreate()\n② requestServiceBindingLocked() -> scheduleBindService(r, bindToken, ...)
+  Caller -> Caller : H.BIND_SERVICE -> handleBindService() -> Service.onBind(intent)
+  Caller -> AMS : IActivityManager.publishService(r, bindToken, binder)
+  AMS -> Caller : ActiveServices.publishServiceLocked()\n-> InnerConnection.connected(name, binder, session, false) [oneway]
+  Caller -> Caller : ServiceDispatcher.connected() -> RunConnection (Handler / Executor)\n-> doConnected() [DeathMonitor] -> ServiceConnection.onServiceConnected()
+end
+@enduml
