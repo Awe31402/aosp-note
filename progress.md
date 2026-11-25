@@ -5,14 +5,15 @@
 
 ## 目前狀態
 
-- **現在**：**第 5 章（Binder）與第 2 章（AIDL HAL）皆已全章完成**；最新完成的第 2 章（[ch02-aidl-hal/00-outline.md](ch02-aidl-hal/00-outline.md) 與 `2.1`–`2.5` 共 5 節、6,007 行、109 段程式碼）全部通過逐行原始碼比對驗證，0 筆不符。
-- **下一步**：進入順位第 3 的**第 4 章 `logd + liblog`**（原書第 4 章〈Logger 日誌系統〉改寫為現代 `logd` + `liblog`），先產出檢查點 1 大綱 `ch04-logd/00-outline.md`。
+- **現在**：**第 5 章（Binder）、第 2 章（AIDL HAL）與第 4 章（`logd + liblog`）皆已全章完成**；最新完成的第 4 章（[ch04-logd/00-outline.md](ch04-logd/00-outline.md) 與 `4.1`–`4.6` 共 6 節、10,018 行、159 段原始碼引用）全部通過逐行與行號範圍原始碼比對驗證，0 筆不符。
+- **下一步**：進入順位第 4 的**第 6 章 `memfd / 現行 ashmem`**（原書第 6 章〈Ashmem 匿名共享記憶體〉改寫為現代 `memfd` + `libdmabufheap` / `ashmem` 相容層），先產出檢查點 1 大綱 `ch06-memfd/00-outline.md`。
 - **待決事項**：
   - [x] 確認 17 對應的 GKI kernel 分支名稱：已確認為 `kernel/common` 的 `android17-6.18`（`028363aa3cfa` / `1e0de07`）
   - [x] 確認 `ch05-binder/00-outline.md`（檢查點 1 通過）
   - [x] 確認 `ch05-binder/5.1-driver.md` 的深度、篇幅與格式（檢查點 2 通過）
   - [x] 完成第 5 章全章 `5.1`–`5.10`
   - [x] 完成第 2 章（AIDL HAL）大綱與全章 `2.1`–`2.5`
+  - [x] 完成第 4 章（`logd + liblog`）大綱與全章 `4.1`–`4.6`
 
 ## 章節進度
 
@@ -22,7 +23,7 @@
 |---|---|---|---|---|
 | 1 | 第 5 章 Binder 進程間通信系統 | Binder（driver、libbinder、servicemanager、AIDL） | 試寫章，重追呼叫鏈（5.1–5.10 全章完成） | ✅ |
 | 2 | 第 2 章 硬體抽象層 | AIDL HAL | 改寫成新機制（2.1–2.5 全章完成） | ✅ |
-| 3 | 第 4 章 Logger 日誌系統 | logd + liblog | 改寫成新機制 | ⬜ |
+| 3 | 第 4 章 Logger 日誌系統 | logd + liblog | 改寫成新機制（4.1–4.6 全章完成） | ✅ |
 | 4 | 第 6 章 Ashmem 匿名共享記憶體 | memfd / 現行 ashmem | 改寫成新機制 | ⬜ |
 | 5 | 第 3 章 智能指標 | 智能指標（RefBase / sp / wp） | 重追 | ⬜ |
 | 6 | 第 7 章 Activity 組件的啟動過程 | — | 重追 | ⬜ |
@@ -59,4 +60,5 @@
 - **2026-11-24**：完成第 5 章 `ch05-binder/5.3-aidl-example.md`（以 `ICppJavaTests.aidl`、`generate_cpp.cpp` 與官方 golden output 解析 `aidl --lang=cpp` 四檔生成碼、`binder::Status`、`DO_NOT_DIRECTLY_USE_ME_IMPLEMENT_META_INTERFACE`、`TransactionCodeData`、`enforceNoDataAvail`、`Delegator`，並對照 `aidl_test_service.cpp`、`main_gpuservice.cpp`、`aidl_test_client` 與 NDK `codelab/client/testClient.cpp`，逐行比對驗證 0 筆不符）。
 - **2026-11-24**：完成第 5 章剩餘全部小節 `5.4-refcount.md`、`5.5-death-notification.md`、`5.6-servicemanager-start.md`、`5.7-servicemanager-proxy.md`、`5.8-service-start.md`、`5.9-service-proxy.md`、`5.10-java-interface.md`；第 5 章全章 10 節（15,291 行、311 段程式碼）全數通過逐行原始碼驗證（0 筆不符、0 筆 `TODO: 未確認`、10 張 Mermaid 時序圖全數通過語法檢查），狀態推進至 ✅ 全章完成。
 - **2026-11-24**：完成第 2 章〈AIDL HAL〉全章：`ch02-aidl-hal/00-outline.md` 與 `2.1-kernel-driver.md`–`2.5-app-client.md` 共 5 節（6,007 行、109 段程式碼、6 張 Mermaid 圖），以 `android.hardware.light`（GKI LED 子系統 + Rust HAL + VTS + Java 零 JNI `LightsService` + `SystemLightsManager`）為主線並對照 `android.hardware.vibrator`（C++ `libbinder_ndk` HAL + Vendor APEX + JNI `VibratorController`）與傳統 `libhardware`，全數通過逐行原始碼驗證（0 筆不符、0 筆 `TODO: 未確認`），狀態推進至 ✅ 全章完成。
+- **2026-11-25**：完成第 4 章〈`logd` 與 `liblog` 日誌系統〉全章：`ch04-logd/00-outline.md` 與 `4.1-log-format.md`–`4.6-logcat.md` 共 6 節（10,018 行、159 段原始碼引用、46 處 `〔與 2.3 差異〕` 對照、各節附完整時序／結構圖），以 `platform/system/logging`（`d35ba62`）與 `platform/frameworks/base`（`94b4c163`）為基準，完整重寫日誌緩衝區與格式、`logd` 守護行程（`SerializedLogBuffer` + zstd 壓縮 + `PruneList` + `LogReaderThread` + `LogKlog`/`LogAudit`/`LogdNativeService`）、`liblog` 雙通道讀寫（`LogdSocket` + `/dev/pmsg0`）、C/C++/Rust 與 Java/JNI 介面及 `logcat` 工具分析，全數通過逐行與行號範圍原始碼驗證（0 筆不符、0 筆 `TODO: 未確認`），狀態推進至 ✅ 全章完成。
 - **2026-11-25**：將 `aosp-note` 內第 2、4、5 章全部 27 張 Mermaid 圖表（21 張時序圖、3 張架構圖、3 張類別圖）改寫為 PlantUML（`.puml` + 白底高對比 `.png` 存於各章節 `figs/`），Markdown 改為圖片引用，並同步更新 `BRIEF.md` 與 `PLAN.md` 寫作規範。
