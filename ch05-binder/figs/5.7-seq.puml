@@ -1,0 +1,86 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "C++ Client\n/ Server" as Caller
+participant "defaultServiceManager()" as ISM
+participant "getBackendUnified\nServiceManager()" as BUSM
+participant "ProcessState" as PS
+participant "IPCThreadState" as IPC
+participant "BpBinder(0)" as BPB
+participant "android::os::\nIServiceManager" as AIDL
+participant "Binder 驅動\n(/dev/binder)" as DRV
+
+Caller -> ISM : defaultServiceManager()
+activate ISM
+note over ISM : std::call_once(gSmOnce)
+ISM -> BUSM : getBackendUnifiedServiceManager()
+activate BUSM
+note over BUSM : std::call_once(gUSmOnce)
+BUSM -> BUSM : WaitForProperty("servicemanager.ready", "true", 1s)
+
+loop while hasOutOfProcessServiceManager() and sm == nullptr
+  BUSM -> PS : selfIfKernelBinderEnabled()
+  activate PS
+  note over PS : access(kDefaultDriver, R_OK) + std::call_once(gProcessOnce)\n+ pthread_atfork + open_driver + mmap
+  PS --> BUSM : sp<ProcessState>
+  deactivate PS
+
+  BUSM -> PS : getContextObject(nullptr)
+  activate PS
+  PS -> PS : getStrongProxyForHandle(0)
+  note over PS : 持 mLock 查 mHandleToObject[0]（非本機 the_context_object）
+  PS -> IPC : transact(0, PING_TRANSACTION, data, nullptr, 0)
+  activate IPC
+  IPC -> DRV : ioctl(BINDER_WRITE_READ) 探活 Context Manager
+  DRV --> IPC : NO_ERROR（若尚未就緒則 DEAD_OBJECT）
+  IPC --> PS : status
+  deactivate IPC
+
+  alt status == DEAD_OBJECT
+    PS --> BUSM : nullptr
+    note over BUSM : ALOGE 並 sleep(1) 重試迴圈
+  else Context Manager 已就緒
+    PS -> BPB : BpBinder::PrivateAccessor::create(0, &postTask)
+    activate BPB
+    note over BPB : UID/總量水位統計 + extendObjectLifetime(OBJECT_LIFETIME_WEAK)
+    BPB -> IPC : incWeakHandle(0, this) 寫入 BC_INCREFS 0
+    note over BPB : sp::make 觸發 onFirstRef()
+    BPB -> IPC : incStrongHandle(0, this) 寫入 BC_ACQUIRE 0
+    BPB --> PS : sp<BpBinder>
+    deactivate BPB
+    note over PS : 寫入 mHandleToObject[0]，釋放 mLock 並執行 postTask()
+    PS -> PS : Stability::markCompilationUnit(context)
+    PS --> BUSM : sp<IBinder> (BpBinder handle=0)
+  end
+  deactivate PS
+
+  BUSM -> AIDL : interface_cast -> asInterface(context)
+  activate AIDL
+  note over AIDL : queryLocalInterface() == nullptr，執行 sp<BpServiceManager>::make(context)
+  AIDL --> BUSM : sp<android::os::BpServiceManager>
+  deactivate AIDL
+end
+
+note over BUSM : gUnifiedServiceManager = sp<BackendUnifiedServiceManager>::make(sm)\n（內建 BinderCacheWithInvalidation）
+BUSM --> ISM : gUnifiedServiceManager
+deactivate BUSM
+
+note over ISM : gDefaultServiceManager = sp<CppBackendShim>::make(gUnifiedServiceManager)
+ISM --> Caller : sp<android::IServiceManager>
+deactivate ISM
+@enduml

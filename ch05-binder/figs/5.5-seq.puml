@@ -1,0 +1,68 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Client 業務層 /\nDeathRecipient" as Client
+participant "Client\nBpBinder" as BpB
+participant "Client\nIPCThreadState" as C_IPC
+participant "Binder\n核心驅動" as Driver
+participant "Server 行程\n(/dev/binder)" as Server
+
+group #EFF6FF 5.5.1 註冊死亡接收通知
+  Client -> BpB : linkToDeath(recipient, cookie, flags)
+  BpB -> BpB : 檢查執行緒池與 mObitsSent，首次建立 mObituaries
+  BpB -> BpB : getWeakRefs()->incWeak(this) 防止 cookie 懸空
+  BpB -> C_IPC : requestDeathNotification(binderHandle(), this) + flushCommands()
+  C_IPC -> Driver : ioctl(BINDER_WRITE_READ) 送出 BC_REQUEST_DEATH_NOTIFICATION
+  Driver -> Driver : binder_thread_write: kzalloc(death), 鎖序 outer -> node
+  Driver -> Driver : 綁定 ref->death = death (若 node->proc == NULL 則立刻排入 proc->todo)
+  BpB -> BpB : mObituaries->add(ob) 並返回 NO_ERROR
+end
+
+group #FEF2F2 5.5.2 Server 異常終止與發送死亡通知
+  Server -> Driver : 行程退出關閉 fd -> binder_release()
+  Driver -> Driver : binder_defer_work(BINDER_DEFERRED_RELEASE)
+  Driver -> Driver : binder_deferred_release() -> 逐一呼叫 binder_node_release(node)
+  Driver -> Driver : node->proc = NULL, 遍歷 node->refs 將 ref->death->work 排入 ref->proc->todo
+  Driver --> C_IPC : 喚醒 Client Binder 執行緒 -> binder_thread_read()
+  Driver -> Driver : 移入 proc->delivered_death, 解鎖後 put_user 寫入 BR_DEAD_BINDER + cookie
+  C_IPC -> C_IPC : executeCommand(BR_DEAD_BINDER) 讀取 BpBinder* proxy
+  C_IPC -> BpB : proxy->sendObituary()
+  BpB -> C_IPC : 設 mAlive=0, mObitsSent=1, 提前呼叫 clearDeathNotification + flushCommands
+  C_IPC -> Driver : BC_CLEAR_DEATH_NOTIFICATION -> work.type 升級為 DEAD_BINDER_AND_CLEAR
+  BpB -> Client : 解鎖 mLock 後逐一 reportOneDeath -> recipient->binderDied(wpThis)
+  C_IPC -> Driver : executeCommand 寫入 BC_DEAD_BINDER_DONE + proxy
+  Driver -> Driver : binder_thread_write: 從 delivered_death 摘除, 轉為 CLEAR_DEATH_NOTIFICATION 排入 todo
+  Driver --> C_IPC : binder_thread_read: kfree(death) 並回傳 BR_CLEAR_DEATH_NOTIFICATION_DONE
+  C_IPC -> BpB : proxy->getWeakRefs()->decWeak(proxy) 完成生命週期閉環
+end
+
+group #F0FDF4 5.5.3 Server 仍存活時主動註銷 (或 onLastStrongRef 自動註銷)
+  Client -> BpB : unlinkToDeath(recipient, cookie, flags, outRecipient)
+  BpB -> BpB : 從 mObituaries 移除對應 Obituary，當 size() == 0 時刪除清單
+  BpB -> C_IPC : clearDeathNotification(binderHandle(), this) + flushCommands()
+  C_IPC -> Driver : ioctl 送出 BC_CLEAR_DEATH_NOTIFICATION
+  Driver -> Driver : binder_thread_write: 驗證 cookie, 設 ref->death = NULL
+  alt death->work.entry 為空 (常規註銷)
+    Driver -> Driver : 設為 BINDER_WORK_CLEAR_DEATH_NOTIFICATION 排入 thread/proc->todo
+    Driver --> C_IPC : binder_thread_read: kfree(death) 並回傳 BR_CLEAR_DEATH_NOTIFICATION_DONE
+    C_IPC -> BpB : proxy->getWeakRefs()->decWeak(proxy)
+  else death->work.entry 非空 (恰逢 Server 剛死)
+    Driver -> Driver : 升級為 BINDER_WORK_DEAD_BINDER_AND_CLEAR，待死亡流程回報 DONE 後再釋放
+  end
+end
+@enduml

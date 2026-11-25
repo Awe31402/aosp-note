@@ -1,0 +1,89 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam ClassBackgroundColor #F8FAFC
+skinparam ClassBorderColor #334155
+skinparam ClassHeaderBackgroundColor #E2E8F0
+skinparam ArrowColor #1E293B
+
+interface IInterface {
+  +asBinder() : IBinder
+}
+
+interface IBinder {
+  +transact(code, data, reply, flags) : boolean
+  +queryLocalInterface(descriptor) : IInterface
+}
+
+class Binder {
+  -mObject : long
+  -mOwner : IInterface
+  -mDescriptor : String
+  +attachInterface(owner, descriptor)
+  #onTransact(code, data, reply, flags) : boolean
+  -execTransact(code, dataObj, replyObj, flags) : boolean
+}
+
+class BinderProxy {
+  -mNativeData : long
+  +transact(code, data, reply, flags) : boolean
+  +transactNative(code, data, reply, flags) : boolean
+  {static} -getInstance(nativeData, iBinder) : BinderProxy
+}
+
+class ServiceManager {
+  {static} -sServiceManager : IServiceManager
+  {static} -sCache : Map
+  {static} -getIServiceManager() : IServiceManager
+  {static} +getService(name) : IBinder
+  {static} +addService(name, service) : void
+}
+
+class ServiceManagerNative {
+  {static} +asInterface(obj) : IServiceManager
+}
+
+class ServiceManagerProxy {
+  -mRemote : IBinder
+  -mServiceManager : IServiceManager
+  -getNativeServiceManager() : IBinder
+}
+
+interface IServiceManager <<AIDL interface>> {
+  +getService2(name) : Service
+  +checkService2(name) : Service
+  +addService(name, service, allowIsolated, dumpPriority) : void
+}
+
+class IServiceManager_Stub_Proxy {
+  -mRemote : IBinder
+}
+
+class BinderProxyNativeData <<C++ JNI>> {
+  +mObject : sp<IBinder>
+  +mOrgue : sp<DeathRecipientList>
+  +mFrozenStateChangeCallbackList : sp<FrozenStateChangeCallbackList>
+}
+
+class BackendUnifiedServiceManager <<C++ libbinder BnServiceManager>> {
+  -mCacheForGetService : shared_ptr<BinderCacheWithInvalidation>
+  -mTheRealServiceManager : sp<IServiceManager>
+}
+
+IBinder <|.. Binder
+IBinder <|.. BinderProxy
+IInterface <|-- IServiceManager
+IServiceManager <|.. ServiceManagerProxy
+IServiceManager <|.. IServiceManager_Stub_Proxy
+ServiceManager ..> ServiceManagerNative : getIServiceManager()
+ServiceManagerNative ..> ServiceManagerProxy : new
+ServiceManager o--> IServiceManager : sServiceManager
+ServiceManagerProxy o--> BinderProxy : mRemote (legacy handle 0)
+ServiceManagerProxy o--> IServiceManager_Stub_Proxy : mServiceManager
+IServiceManager_Stub_Proxy o--> BinderProxy : mRemote
+BinderProxy --> BinderProxyNativeData : mNativeData
+BinderProxyNativeData o--> BackendUnifiedServiceManager : mObject (in-process BBinder)
+@enduml

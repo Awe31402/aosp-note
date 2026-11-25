@@ -1,0 +1,65 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "App / system_server\n(Java)" as App
+participant "android.util.\nLog / Slog" as LogSlog
+participant "android.util.\nEventLog" as EventLog
+participant "core/jni\n(Log / EventLogHelper)" as JNI
+participant "liblog\n(system/logging)" as Liblog
+participant "logd\n(/dev/socket/logdw & logdr)" as Logd
+
+group #EFF6FF 情景一：文字日誌寫入、isLoggable 與 wtf
+  App -> LogSlog : Log.isLoggable(tag, level) [@FastNative]
+  LogSlog -> JNI : android_util_Log_isLoggable()
+  JNI -> Liblog : ~__android_log_is_loggable() -> ~__android_log_is_loggable_len()
+  Liblog --> App : boolean (查 persist.log.tag.* / log.tag.*)
+
+  App -> LogSlog : Log.i(tag, msg) / Slog.w(tag, msg)
+  LogSlog -> JNI : Log.println_native(LOG_ID_MAIN/SYSTEM, prio, tag, msg)
+  JNI -> Liblog : ~__android_log_buf_write(bufID, prio, tag, msg)
+  Liblog -> Logd : LogdWrite() -> writev(/dev/socket/logdw)
+
+  App -> LogSlog : Log.e(tag, msg, tr) / Log.wtf / Slog.wtf
+  LogSlog -> LogSlog : printlns() -> LineBreakBufferedWriter 分段
+  LogSlog -> JNI : ImmediateLogWriter -> println_native(...)
+  JNI -> Liblog : ~__android_log_buf_write(...)
+  Liblog -> Logd : writev(/dev/socket/logdw)
+  opt wtf 觸發 TerribleFailureHandler
+    LogSlog -> App : RuntimeInit.wtf() -> AMS.handleApplicationWtf()
+  end
+end
+
+group #F0FDF4 情景二：EventLog 二進位事件寫入與讀取
+  App -> EventLog : EventLog.writeEvent(tag, int/long/float/String/Object...)
+  EventLog -> JNI : EventLogHelper::writeEvent*()
+  JNI -> Liblog : android_log_event_list ctx(tag); ctx << val; ctx.write(LOG_ID_EVENTS)
+  Liblog -> Liblog : android_log_write_list() -> ~__android_log_bwrite()
+  Liblog -> Logd : LogdWrite() -> writev(/dev/socket/logdw)
+
+  App -> EventLog : EventLog.readEvents(tags, out) / readEventsOnWrapping(...)
+  EventLog -> JNI : android_util_EventLog_readEvents*() -> EventLogHelper::readEvents()
+  JNI -> Liblog : android_logger_list_alloc*() + android_logger_open(LOG_ID_EVENTS)
+  loop 直到 EOF 或 -EAGAIN
+    JNI -> Liblog : android_logger_list_read(logger_list, log_msg)
+    Liblog -> Logd : 從 /dev/socket/logdr 讀取 logger_entry v4
+    Logd --> JNI : log_msg (header + tag + payload)
+    JNI -> EventLog : new Event(byte[]) -> Collection.add(event)
+  end
+  App -> EventLog : event.getTag() / event.getData() -> decodeObject()
+end
+@enduml

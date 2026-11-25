@@ -1,0 +1,65 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Client 業務層" as Client
+participant "BpService\n(BpInterface /\nBpRefBase)" as BpIface
+participant "BpBinder" as BpB
+participant "Client\nIPCThreadState" as C_IPC
+participant "Client\nProcessState" as C_PS
+participant "Binder\n核心驅動" as Driver
+participant "Server\nIPCThreadState" as S_IPC
+participant "BBinder" as BB
+participant "BnService\n(BnInterface)" as BnIface
+
+group #EFF6FF 準備階段：建立連線與取得介面代理
+  Client -> C_PS : ProcessState::self() (std::call_once + pthread_atfork + open/mmap)
+  Client -> C_PS : getStrongProxyForHandle(handle)
+  C_PS -> BpB : BpBinder::PrivateAccessor::create(handle, &postTask)
+  Client -> BpIface : interface_cast(bpBinder) -> asInterface() -> make BpService
+end
+
+group #F0FDF4 請求發送階段：序列化、穩定度檢查與寫入驅動
+  Client -> BpIface : 呼叫業務方法 (封裝 Parcel data / writeStrongBinder -> flattenBinder + Stability)
+  BpIface -> BpB : remote()->transact(code, data, &reply, flags)
+  BpB -> BpB : 檢查 mAlive、剝除 FLAG_PRIVATE_VENDOR、Stability::check()
+  BpB -> C_IPC : IPCThreadState::self()->transact(binderHandle(), code, data, reply, flags)
+  C_IPC -> C_IPC : writeTransactionData(BC_TRANSACTION, ...) 寫入 mOut
+  C_IPC -> C_IPC : 檢查 mCallRestriction -> waitForResponse(reply)
+  C_IPC -> Driver : talkWithDriver() -> ioctl(BINDER_WRITE_READ)
+end
+
+group #FFF7ED Server 分派與回覆階段
+  Driver --> S_IPC : 喚醒執行緒池 (BR_TRANSACTION / BR_TRANSACTION_SEC_CTX)
+  S_IPC -> S_IPC : getAndExecuteCommand() -> executeCommand()
+  S_IPC -> S_IPC : buffer.ipcSetDataReference(..., freeBuffer) + 設 mCallingPid/Sid/Uid
+  S_IPC -> BB : doTransactBinder() -> BBinder::transact(code, buffer, &reply, flags)
+  BB -> BnIface : (非內建系統交易碼) onTransact(code, buffer, &reply, flags)
+  BnIface --> BB : 寫入 reply Parcel 並返回 status_t
+  S_IPC -> S_IPC : buffer.setDataSize(0) -> freeBuffer() 寫入 BC_FREE_BUFFER
+  S_IPC -> Driver : sendReply(reply) -> writeTransactionData(BC_REPLY) -> talkWithDriver()
+end
+
+group #FAF5FF Client 接收回覆與歸還緩衝區
+  Driver --> C_IPC : 回傳 BR_REPLY
+  C_IPC -> C_IPC : reply->ipcSetDataReference(..., freeBuffer)
+  C_IPC --> BpB : 返回 NO_ERROR
+  BpB --> BpIface : 返回 NO_ERROR
+  BpIface --> Client : 反序列化 reply (unflattenBinder + finishUnflattenBinder) 並返回結果
+  note over Client, C_IPC : reply 析構時觸發 freeBuffer() 寫入 BC_FREE_BUFFER (非 looper 則 flushIfNeeded)
+end
+@enduml

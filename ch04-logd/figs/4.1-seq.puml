@@ -1,0 +1,51 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "App / Native\n行程" as App
+participant "liblog 寫入端\n(logger_write /\nlogd_writer)" as LibW
+participant "Linux 核心\n(Unix Socket /\npstore)" as Kernel
+participant "logd\nLogListener" as LogdL
+participant "SerializedLogBuffer\n/ Chunk" as Chunk
+participant "logd LogReader\n(SocketLogWriter)" as LogdR
+participant "liblog 讀取端\n(logd_reader /\nlogcat)" as LibR
+
+group #EFF6FF 階段一：組裝文字或二進位 Payload 並封裝 logdw 線上格式 (11 B header)
+  App -> LibW : ~__android_log_buf_write(LOG_ID_MAIN, INFO, "MyApp", "hello")
+  LibW -> LibW : 組裝 payload iovec: prio(1B) + tag\0 + message\0 (或 binary event_header + elements)
+  LibW -> LibW : 填寫 android_log_header_t (id, tid, CLOCK_REALTIME realtime) 並截斷於 4068 B
+  LibW -> Kernel : writev(/dev/socket/logdw, header + payload)
+end
+
+group #F0FDF4 階段二：核心附帶 ucred，logd 轉存緊湊 SerializedLogEntry (30 B header) 並寫入 pmsg
+  Kernel --> LogdL : recvmsg() 交付資料報 + SCM_CREDENTIALS (ucred: uid, pid, gid)
+  LogdL -> LogdL : 校驗 logId 與 SECURITY 權限，剝離 11 B android_log_header_t
+  LogdL -> Chunk : SerializedLogBuffer::Log(logId, realtime, uid, pid, tid, msg, len)
+  Chunk -> Chunk : 分配全域 sequence_，placement new 寫入 30 B SerializedLogEntry + payload
+  note over Chunk : 區塊寫滿時 FinishWriting() 以 zstd 壓縮 contents_ 並釋放未壓縮記憶體
+  LogdL -> Kernel : PmsgWrite(/dev/pmsg0, 7 B pmsgHeader + 11 B logHeader + payload)
+end
+
+group #FFF7ED 階段三：讀取端請求 logdr，按需解壓並轉為 v4 struct logger_entry (28 B header)
+  LibR -> LogdR : 連線 /dev/socket/logdr (SOCK_SEQPACKET) 送出 stream / dumpAndClose 命令
+  LogdR -> Chunk : FlushTo() -> IncReaderRefCount() (若已壓縮則 zstd 解壓)
+  Chunk -> LogdR : SerializedLogEntry::Flush() 填入 28 B v4 logger_entry (含 hdr_size, lid, uid)
+  LogdR -> Kernel : SocketLogWriter::Write() -> sendDatav(logger_entry + msg)
+  Kernel --> LibR : recv(log_msg, LOGGER_ENTRY_MAX_LEN) 完整讀回單筆封包
+  LibR -> LibR : 透過 log_msg.msg() (buf + hdr_size) 取得原始 payload 並解碼顯示
+end
+@enduml

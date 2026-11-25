@@ -1,0 +1,65 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "GKI 核心開機\n(subsys_initcall)" as Boot
+participant "led-class.c\n(GKI Core)" as LedClass
+participant "led-core.c\n(GKI Core)" as LedCore
+participant "Vendor LED 驅動\n(.ko)" as VendorKO
+participant "ueventd /\nSELinux" as Ueventd
+participant "Light AIDL\nHAL 行程" as HAL
+
+group #EFF6FF 階段一：GKI 核心建立 LED 子系統
+  Boot -> LedClass : leds_init()
+  LedClass -> LedClass : alloc_ordered_workqueue("leds", 0) 建立 leds_wq
+  LedClass -> LedClass : class_register(&leds_class) 綁定 dev_groups (brightness/max_brightness/trigger)
+end
+
+group #F0FDF4 階段二：Vendor .ko 經 KMI 註冊實體 LED 裝置
+  VendorKO -> LedClass : devm_led_classdev_register_ext(parent, &led_cdev, &init_data)
+  LedClass -> LedClass : led_classdev_register_ext() 解析 fwnode 名稱與預設屬性
+  LedClass -> LedClass : device_create_with_groups(&leds_class, parent, 0, led_cdev, ...)
+  LedClass -> LedCore : led_init_core(led_cdev) 初始化 set_brightness_work 與 blink_timer
+  LedClass --> Ueventd : 發送 KOBJ_ADD uevent (sysfs 屬性已原子就緒)
+  Ueventd -> Ueventd : 套用 vendor ueventd.rc DAC 權限與 SELinux sysfs_leds 標籤
+end
+
+group #FFF7ED 階段三：HAL 寫入 /sys/class/leds/名稱/brightness
+  HAL -> LedClass : write(fd, "128", 3) -> brightness_store()
+  LedClass -> LedClass : mutex_lock(led_access) -> 檢查 LED_SYSFS_DISABLE -> kstrtoul()
+  LedClass -> LedCore : led_set_brightness(led_cdev, 128)
+  LedCore -> LedCore : led_set_brightness_nosleep() 裁切 max_brightness 並檢查 LED_SUSPENDED
+  LedCore -> LedCore : led_set_brightness_nopm()
+  alt 驅動實作不休眠 brightness_set (快速路徑)
+    LedCore -> VendorKO : ~__led_set_brightness() -> brightness_set(led_cdev, 128)
+  else 驅動僅實作可休眠 brightness_set_blocking (慢速路徑)
+    LedCore -> LedCore : 寫入 delayed_set_value + smp_mb~__before_atomic() + set_bit(LED_SET_BRIGHTNESS)
+    LedCore -> LedCore : queue_work(leds_wq, &set_brightness_work)
+    LedCore -> VendorKO : worker 喚醒 set_brightness_delayed() -> ~__led_set_brightness_blocking() -> brightness_set_blocking()
+  end
+  LedClass --> HAL : mutex_unlock(led_access) 並回傳寫入位元組數
+end
+
+group #FAF5FF 階段四：HAL 讀取 /sys/class/leds/名稱/brightness
+  HAL -> LedClass : read(fd, buf, ...) -> brightness_show()
+  LedClass -> LedCore : mutex_lock(led_access) -> led_update_brightness(led_cdev)
+  opt 驅動有實作 brightness_get
+    LedCore -> VendorKO : brightness_get(led_cdev) 回讀硬體亮度並更新快取
+  end
+  LedClass --> HAL : mutex_unlock(led_access) -> sprintf("%u\\n", brightness)
+end
+@enduml

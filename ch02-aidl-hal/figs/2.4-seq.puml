@@ -1,0 +1,55 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "SystemServer" as SS
+participant "LightsService\n(Java)" as LS
+participant "VibratorManagerService\n(Java)" as VMS
+participant "libandroid_servers\n(JNI)" as JNI
+participant "libvibratorservice\n/ NDK" as Native
+participant "servicemanager" as SM
+participant "Vendor\nILights HAL" as LightHAL
+participant "Vendor\nIVibrator HAL" as VibHAL
+
+group #EFF6FF 路徑 A：Java 零 JNI 直連 AIDL HAL (LightsService)
+  SS -> LS : startBootstrapServices -> startService(LightsService.class)
+  LS -> SM : VintfHalCache.get() -> waitForDeclaredService(ILights/default)
+  SM --> LS : IBinder proxy (Binder.allowBlocking + linkToDeath)
+  LS -> LightHAL : getInterfaceVersion() 與 getLights()
+  LightHAL --> LS : HwLight[] 清單 (依 isSystemLight 分流)
+  LS -> SS : onStart() -> publishLocalService + publishBinderService(lights)
+  note over LS, LightHAL : 執行期寫入燈光 (零 JNI，直接經 Java BinderProxy)
+  LS -> LightHAL : LightImpl.setLightUnchecked -> mVintfLights.get().setLightState(id, state)
+  LightHAL --> LS : 回覆成功 (或 RemoteException 隔離)
+end
+
+group #F0FDF4 路徑 B：JNI + C++ libbinder_ndk (VibratorManagerService)
+  SS -> VMS : startOtherServices -> startService(VibratorManagerService.Lifecycle.class)
+  VMS -> JNI : onStart() -> nativeInit / nativeNewInit (註冊 NativeAllocationRegistry)
+  JNI -> Native : ManagerHalController / HalController / HalProvider 初始化
+  Native -> SM : AServiceManager_isDeclared + waitForService / checkService
+  SM --> Native : AIBinder -> IVibrator::fromBinder (+ AIBinder_linkToDeath)
+  VMS -> SS : publishBinderService(vibrator_manager) + publishLocalServices
+  note over VMS, VibHAL : 執行期觸發震動 (經 JNI 避免 Java 回呼物件 GC 負擔)
+  VMS -> JNI : VibratorController.on / NativeHandler.vibrateWithCallback
+  JNI -> Native : HalController::doWithRetry -> AidlHalWrapper::on (或直接呼叫 hal->on)
+  Native -> VibHAL : IVibrator::on(timeoutMs, BnVibratorCallback)
+  VibHAL --> Native : onComplete() 反向 Binder 回呼 (震動結束)
+  Native --> JNI : GetOrAttachJNIEnvironment(sJvm) -> CallVoidMethod
+  JNI --> VMS : HalVibrator.Callbacks.onVibrationStepComplete(id, vibId, stepId)
+end
+@enduml

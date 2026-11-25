@@ -1,0 +1,75 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Native / JNI\n/ logcat" as Caller
+participant "logger_write.cpp" as LW
+participant "properties.cpp" as Prop
+participant "logd_writer.cpp" as DW
+participant "logd\n(LogListener / LogReader\n/ CommandListener)" as Logd
+participant "pmsg_writer.cpp" as PW
+participant "logger_read.cpp" as LR
+participant "logd_reader.cpp" as DR
+participant "pmsg_reader.cpp" as PR
+
+group #EFF6FF 情景一：寫入一條日誌（Write Path）
+  Caller -> LW : ~__android_log_buf_write(log_id, prio, tag, msg)
+  LW -> Prop : ~__android_log_is_loggable(prio, tag, VERBOSE)
+  Prop -> Prop : trylock + ~__system_property_area_serial() 快取查表
+  Prop --> LW : 1 (允許寫入) / 0 (拒寫返回 -EPERM)
+  LW -> LW : ~__android_log_write_log_message(&log_message)
+  LW -> LW : logger_function -> ~__android_log_logd_logger
+  LW -> LW : write_to_log() 取 CLOCK_REALTIME 與權限/長度檢查
+  LW -> DW : LogdWrite(log_id, &ts, vec, 3)
+  DW -> DW : 選 BlockingSocket(SECURITY) 或 NonBlockingSocket(其他)
+  DW -> DW : GetSocket() CAS 延遲連線 /dev/socket/logdw
+  opt dropped != 0
+    DW -> Logd : writev(LIBLOG_LOG_TAG=1006, dropped)
+  end
+  DW -> Logd : writev(android_log_header_t + payload)
+  alt ret < 0 且 errno != EAGAIN
+    DW -> DW : logd_socket.Reconnect() 並重試 writev
+  else errno == EAGAIN
+    DW -> DW : dropped.fetch_add(1)
+  end
+  Logd -> Logd : LogListener::ProcessBuffer -> logbuf_->Log(...)
+  Logd -> PW : PmsgWrite(logId, &ts, &vec, 1, uid, pid, tid)
+  PW -> PW : ANDROID_DEBUGGABLE 檢查 + GetPmsgFd() CAS 開啟 /dev/pmsg0
+  PW --> Logd : writev(pmsgHeader + logHeader + payload)
+end
+
+group #F0FDF4 情景二：讀取緩衝區與控制指令（Read & Control Path）
+  Caller -> LR : android_logger_list_alloc(mode, tail, pid)
+  Caller -> LR : android_logger_open(list, log_id) -> 位元編碼 logger*
+  Caller -> LR : android_logger_list_read(list, &log_msg)
+  alt 一般模式（logd）
+    LR -> DR : LogdRead(list, &log_msg)
+    DR -> Logd : logdOpen() 連 /dev/socket/logdr (SOCK_SEQPACKET) 送出 stream/dumpAndClose
+    Logd --> DR : recv() 單筆完整 logger_entry + payload
+    DR --> LR : 返回位元組數
+  else ANDROID_LOG_PSTORE 模式（logcat -L）
+    LR -> PR : PmsgRead(list, &log_msg)
+    PR -> PR : 讀 /sys/fs/pstore/pmsg-ramoops-0 同步 LOGGER_MAGIC 並轉譯為 v4 logger_entry
+    PR --> LR : 返回位元組數
+  end
+  LR -> LR : 檢查 hdr_size/len 邊界並補結尾 NUL
+  LR --> Caller : 返回 log_msg
+  Caller -> DR : android_logger_clear / get_log_size / set_log_size
+  DR -> Logd : SendLogdControlMessage() 連 /dev/socket/logd (SOCK_STREAM)
+  Logd --> DR : 回傳 "success" 或數值/報表
+end
+@enduml

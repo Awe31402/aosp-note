@@ -1,0 +1,54 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Soong /\naidl --lang=cpp" as Build
+participant "生成碼\n(I / Bp / Bn)" as Gen
+participant "Server\n(CppJavaTests :\nBnCppJavaTests)" as Server
+participant "ServiceManager" as SM
+participant "Client\n(AidlTest / FdTest)" as Client
+participant "Binder\n核心驅動" as Driver
+
+group #EFF6FF 編譯期：從 .aidl 生成 4 份 C++ 原始碼
+  Build -> Gen : GenerateCpp(ICppJavaTests.aidl)
+  Gen --> Build : ICppJavaTests.h (I + Default), BpCppJavaTests.h, BnCppJavaTests.h (Bn + Delegator), ICppJavaTests.cpp
+end
+
+group #F0FDF4 啟動期：建立 Bn 物件、註冊服務與啟動執行緒池
+  Server -> Gen : 建構 BnCppJavaTests()
+  Gen -> Gen : Stability::markCompilationUnit(this) + BBinder::setTransactionCodeMap(&ICppJavaTests_data)
+  Server -> SM : defaultServiceManager()->addService(name, service)
+  Server -> Driver : setThreadPoolMaxThreadCount() + startThreadPool() + joinThreadPool()
+end
+
+group #FFF7ED 執行期：查詢代理並發起 RepeatFileDescriptor 呼叫
+  Client -> SM : waitForService / interface_cast(ibinder)
+  SM --> Client : BpCppJavaTests (封裝 BpBinder)
+  Client -> Gen : BpCppJavaTests::RepeatFileDescriptor(std::move(write_fd), &return_fd)
+  Gen -> Gen : _aidl_data.markForBinder(remoteStrong()) + writeInterfaceToken() + writeUniqueFileDescriptor()
+  Gen -> Driver : remote()->transact(TRANSACTION_RepeatFileDescriptor, _aidl_data, &_aidl_reply, 0)
+  Driver --> Gen : Server 端喚醒 -> BBinder::transact() -> BnCppJavaTests::onTransact()
+  Gen -> Gen : checkInterface(this) + readUniqueFileDescriptor() + enforceNoDataAvail()
+  Gen -> Server : CppJavaTests::RepeatFileDescriptor(std::move(in_read), &_aidl_return)
+  Server --> Gen : dup(fd) 並回傳 Status::ok()
+  Gen -> Gen : _aidl_status.writeToParcel(_aidl_reply) + _aidl_reply->writeUniqueFileDescriptor(_aidl_return)
+  Gen --> Driver : sendReply(BC_REPLY)
+  Driver --> Gen : Client 收到 BR_REPLY
+  Gen -> Gen : _aidl_status.readFromParcel(_aidl_reply) -> isOk() -> readUniqueFileDescriptor(_aidl_return)
+  Gen --> Client : 回傳 binder::Status (isOk == true) 與新的 return_fd
+end
+@enduml

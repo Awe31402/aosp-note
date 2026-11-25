@@ -1,0 +1,72 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Client Java\n(App / Stub.Proxy)" as ClientJava
+participant "ServiceManager /\nServiceManagerProxy" as SMJava
+participant "BinderProxy /\nProxyMap" as BPJava
+participant "JNI\n(android_util_Binder /\nServiceManagerNative)" as JNI
+participant "C++ BackendUnified\nServiceManager" as BUSM
+participant "Kernel Binder Driver\n+ servicemanager" as Driver
+participant "Server JNI\n(JavaBBinderHolder /\nJavaBBinderExt)" as ServerJNI
+participant "Server Java\n(Binder / Stub / Service)" as ServerJava
+
+group #EFF6FF 5.10.1 取得 ServiceManager Java 代理
+  SMJava -> JNI : BinderInternal.getContextObject()
+  JNI -> Driver : ProcessState::getContextObject(0) -> BpBinder(0)
+  JNI --> SMJava : BinderProxy(handle 0) -> mRemote (相容保留)
+  SMJava -> JNI : ServiceManagerProxy.getNativeServiceManager()
+  JNI -> BUSM : IServiceManagerFFI -> getBackendUnifiedServiceManager()
+  JNI -> BPJava : javaObjectForIBinder(BUSM BBinder) -> BinderProxy.getInstance()
+  BPJava --> SMJava : BinderProxy(in-process BUSM) -> IServiceManager.Stub.asInterface()
+end
+
+group #F0FDF4 5.10.3 Java 服務建立與註冊
+  ServerJava -> ServerJNI : new Service() -> Binder() -> getNativeBBinderHolder()
+  ServerJNI --> ServerJava : JavaBBinderHolder* + NativeAllocationRegistry
+  ServerJava -> SMJava : ServiceManager.addService(name, service)
+  SMJava -> ServerJNI : Parcel.writeStrongBinder -> ibinderForJavaObject() -> jbh->get()
+  ServerJNI -> ServerJNI : 延遲建立 JavaBBinderExt(GlobalRef)
+  SMJava -> BUSM : transact(in-process) -> addService()
+  BUSM -> Driver : BpServiceManager::addService() -> BC_TRANSACTION -> servicemanager 建 node
+end
+
+group #FFF7ED 5.10.4 取得 Java 服務代理物件
+  ClientJava -> SMJava : ServiceManager.getService(name)
+  SMJava -> BUSM : sCache 未命中 -> rawGetService -> checkService2 (in-process)
+  alt C++ BinderCacheWithInvalidation 未命中
+    BUSM -> Driver : mTheRealServiceManager->checkService2() -> binder_translate_handle
+    Driver --> BUSM : BpBinder(handle) -> updateCache(linkToDeath)
+  end
+  BUSM --> JNI : Parcel.readStrongBinder() -> javaObjectForIBinder(BpBinder)
+  JNI -> BPJava : BinderProxy.getInstance(nativeData, bp) 查 sProxyMap + NativeAllocationRegistry
+  BPJava --> ClientJava : BinderProxy -> Stub.asInterface() -> Stub.Proxy
+end
+
+group #FAF5FF 5.10.5 Java 服務跨行程呼叫
+  ClientJava -> BPJava : Stub.Proxy.method() -> BinderProxy.transact()
+  BPJava -> JNI : transactNative() -> android_os_BinderProxy_transact()
+  JNI -> Driver : BpBinder::transact() -> BC_TRANSACTION
+  Driver -> ServerJNI : BR_TRANSACTION -> JavaBBinderExt::onTransact()
+  ServerJNI -> ServerJava : CallBooleanMethod(Binder.execTransact -> execTransactInternal)
+  ServerJava -> ServerJava : Stub.onTransact() -> enforceInterface + enforceNoDataAvail -> 實作方法
+  ServerJava --> ServerJNI : writeNoException + 回傳值 -> true
+  ServerJNI --> Driver : NO_ERROR -> BC_REPLY
+  Driver --> JNI : BR_REPLY -> JNI_TRUE
+  JNI --> ClientJava : _reply.readException() + 讀取結果
+end
+@enduml

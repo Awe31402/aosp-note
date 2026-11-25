@@ -1,0 +1,51 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam PackageBorderColor #64748B
+skinparam RectangleBackgroundColor #FFFFFF
+skinparam RectangleBorderColor #334155
+skinparam ArrowColor #1E293B
+
+package "寫入路徑（Scenario 1）" #EFF6FF {
+  rectangle "~__android_log_buf_write / print" as API
+  rectangle "properties.cpp\n~__android_log_is_loggable_len" as Prop
+  rectangle "~__android_log_write_log_message" as WLM
+  rectangle "logger_function\n預設 ~__android_log_logd_logger" as LoggerFn
+  rectangle "write_to_log\n權限與格式檢查" as WTL
+  rectangle "logd_writer.cpp\nLogdWrite + LogdSocket" as LogdW
+  rectangle "/dev/socket/logdw" as Logdw
+  rectangle "logd:\nLogListener::ProcessBuffer" as LogdListener
+  rectangle "pmsg_writer.cpp\nPmsgWrite" as PmsgW
+  rectangle "/dev/pmsg0" as PmsgDev
+
+  API --> Prop
+  Prop --> WLM : 通過
+  WLM --> LoggerFn
+  LoggerFn --> WTL
+  WTL --> LogdW
+  LogdW --> Logdw : SOCK_DGRAM writev
+  Logdw --> LogdListener
+  LogdListener --> PmsgW
+  PmsgW --> PmsgDev : writev
+}
+
+package "讀取與控制路徑（Scenario 2）" #F0FDF4 {
+  rectangle "logcat / EventLog" as Logcat
+  rectangle "logger_read.cpp\nandroid_logger_list_*" as LRead
+  rectangle "logd_reader.cpp\nLogdRead / SendLogdControlMessage" as LogdR
+  rectangle "pmsg_reader.cpp\nPmsgRead" as PmsgR
+  rectangle "/dev/socket/logdr" as Logdr
+  rectangle "/dev/socket/logd" as LogdCtrl
+  rectangle "/sys/fs/pstore/pmsg-ramoops-0" as Pstore
+
+  Logcat --> LRead
+  LRead --> LogdR
+  LRead --> PmsgR
+  LogdR --> Logdr : SOCK_SEQPACKET
+  LogdR --> LogdCtrl : SOCK_STREAM
+  PmsgR --> Pstore : read + lseek
+}
+@enduml

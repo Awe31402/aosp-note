@@ -45,7 +45,7 @@
 
    > 〔與 2.3 差異〕邏輯改變：……（原書 p.XXX）
    ```
-3. 小節結尾附一張 Mermaid `sequenceDiagram` 總結呼叫鏈。
+3. 小節結尾附一張 PlantUML 時序圖總結呼叫鏈（原始檔存於該章節 `figs/<節號>-seq.puml`，架構圖為 `-arch.puml`、類別圖為 `-class.puml`，以 `java -Djava.awt.headless=true -DPLANTUML_LIMIT_SIZE=8192 -jar /usr/share/plantuml/plantuml.jar -tpng -charset UTF-8` 編譯為白底高對比 `.png`，Markdown 以 `![...](figs/xxx.png)` 引用，確保深淺主題皆清晰可讀；中文字型固定 `Noto Sans CJK TC`，注意以 `~__`／`~--` 跳脫 C 符號與 CLI 旗標避免觸發 Creole 底線／刪除線）。
 4. **自我檢查**（寫完一節就做）：
    - 每段程式碼都能對應到實際檔案？用 grep 在本機 clone 中逐段比對。
    - 有沒有沒標來源的斷言？有就補來源，否則改成 `TODO: 未確認`。

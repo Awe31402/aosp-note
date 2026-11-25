@@ -1,0 +1,62 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "init /\napexd" as Init
+participant "Vendor HAL 行程\n(C++ NDK 或 Rust)" as HAL
+participant "libbinder_ndk +\nlibbinder" as NDK
+participant "Binder 核心驅動\n(/dev/binder)" as Driver
+participant "servicemanager\n(ServiceManager)" as SM
+participant "Access\n(SELinux)" as Acc
+participant "libvintf\n(VintfObject)" as VINTF
+participant "等待中客戶端\n(SystemServer / VTS)" as Client
+
+group #EFF6FF 階段一：啟動獨立 Vendor HAL 行程 (或掛載 Vendor APEX)
+  Init -> HAL : 依 .rc (class hal, user nobody) 執行 /vendor/bin/hw/... 或 /apex/.../bin/hw/...
+  HAL -> NDK : ABinderProcess_setThreadPoolMaxThreadCount(0)
+  HAL -> HAL : 建立 BnVibrator (SharedRefBase::make) 或 BnLights (new_binder)
+  HAL -> NDK : asBinder() -> createBinder() -> AIBinder_markVintfStability()
+  NDK -> NDK : Stability::markVintf() 寫入 BBinder 穩定度為 Level::VINTF (0b111111)
+end
+
+group #F0FDF4 階段二：跨行程註冊服務
+  HAL -> NDK : AServiceManager_addService(binder, "android.hardware.light.ILights/default")
+  NDK -> NDK : defaultServiceManager()->addService(name, binder->getBinder())
+  NDK -> Driver : ioctl(BINDER_WRITE_READ) 攜帶 flat_binder_object + 4-byte Level::VINTF
+  Driver --> SM : 派送 BR_TRANSACTION_SEC_CTX (含核心驗證 PID/UID/SID 與遠端 BpBinder)
+end
+
+group #FFF7ED 階段三：servicemanager 雙重把關與登錄
+  SM -> Acc : mAccess->getCallingContext() 讀取 callingSid / uid / pid
+  SM -> SM : 檢查 appId 不可 >= AID_APP
+  SM -> Acc : canAddService() -> Access::canAdd(ctx, name)
+  Acc -> Acc : selabel_lookup(service_contexts) -> selinux_check_access(sctx, tctx, "service_manager", "add")
+  Acc --> SM : SELinux 授權通過
+  SM -> SM : 檢查 binder != nullptr 與 isValidServiceName(name)
+  SM -> SM : meetsDeclarationRequirements() -> Stability::requiresVintfDeclaration(binder) == true
+  SM -> VINTF : isVintfDeclared() -> GetDeviceHalManifest / GetFrameworkHalManifest -> hasAidlInstance(pkg, iface, inst)
+  VINTF --> SM : VINTF Manifest 宣告相符
+  SM -> Driver : binder->linkToDeath(this) 監控 HAL 崩潰
+  SM -> SM : 寫入 mNameToService[name]
+end
+
+group #FAF5FF 階段四：喚醒等待客戶端並進入服務迴圈
+  SM -> Client : dispatchRegistrationCallbacks() 通知 waitForService / waitForDeclaredService 呼叫端
+  SM --> HAL : 回傳 Status::ok()
+  HAL -> NDK : ABinderProcess_joinThreadPool() 阻塞處理後續硬體 IPC 請求
+end
+@enduml

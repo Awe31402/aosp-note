@@ -1,0 +1,71 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "VtsHalLightTargetTest\n(main / GTest)" as Main
+participant "ProcessState\n(Binder 執行緒池)" as PS
+participant "IServiceManager\n(CppBackendShim)" as SM_C
+participant "servicemanager\n(ServiceManager)" as SM_S
+participant "libvintf\n(Device / Framework Manifest)" as VINTF
+participant "Vendor HAL\n(ILights 服務行程)" as HAL
+
+group #EFF6FF 階段一：初始化執行緒池與 VINTF 實例發現
+  Main -> PS : ProcessState::self()->setThreadPoolMaxThreadCount(1) + startThreadPool()
+  Main -> SM_C : getAidlHalInstanceNames("android.hardware.light.ILights") -> getDeclaredInstances()
+  SM_C -> SM_S : Binder IPC: ServiceManager::getDeclaredInstances(interface)
+  SM_S -> VINTF : getVintfInstances() -> forEachManifest() -> getAidlInstances(pkg, iface)
+  VINTF --> SM_S : 回傳宣告實例清單 (例如 ["default"])
+  SM_S -> SM_S : 逐一執行 canFindService() SELinux 權限過濾
+  SM_S --> SM_C : 回傳合法實例清單
+  SM_C --> Main : INSTANTIATE_TEST_SUITE_P 展開 LightsAidl 與 LightsAidlV3 參數化測試
+end
+
+group #F0FDF4 階段二：SetUp 宣告檢驗、等待服務上線與取得燈光清單
+  Main -> SM_C : LightsAidl::SetUp() -> waitForDeclaredService(ILights, instanceName)
+  SM_C -> SM_S : isDeclared(instanceName) -> canFindService() + isVintfDeclared()
+  SM_S -> VINTF : hasAidlInstance(pkg, iface, instance)
+  VINTF --> SM_S : true
+  SM_S --> SM_C : true
+  SM_C -> SM_S : waitForService() -> realGetService() (若未就緒則 registerForNotifications)
+  opt HAL 尚未註冊 (例如 Lazy HAL 啟動中)
+    SM_S --> PS : 反向回呼 Waiter::onRegistration(name, binder)
+    PS --> SM_C : mCv 喚醒並回傳 BpBinder
+  end
+  SM_C --> Main : interface_cast 轉型為 sp<ILights> 代理
+  Main -> HAL : lights->getLights(&supportedLights)
+  HAL --> Main : 回傳 HwLight[] 與 Status::EX_NONE
+end
+
+group #FFF7ED 階段三：基礎功能契約與 V3 版本相容性驗證
+  Main -> HAL : TEST_P(LightsAidl): setLightState() (正常/LOW_PERSISTENCE/maxId+1)
+  HAL --> Main : 回傳 Status (isOk / EX_UNSUPPORTED_OPERATION)
+  Main -> HAL : LightsAidlV3::SetUp() -> lights->getInterfaceVersion()
+  HAL --> Main : 回傳凍結版本號 (1 / 2 / 3)
+  alt 版本小於 3
+    Main -> Main : GTEST_SKIP() 跳過 V3 測試
+  else 版本大於等於 3
+    Main -> HAL : TEST_P(LightsAidlV3): setLightEffects() (正向/非法參數/無效 ID)
+    HAL --> Main : 回傳 Status (isOk / EX_UNSUPPORTED_OPERATION / EX_ILLEGAL_ARGUMENT)
+  end
+end
+
+group #FAF5FF 階段四：TearDown 清理與背光復原
+  Main -> HAL : 遍歷所有 supportedLights 呼叫 setLightState(id, off)
+  Main -> HAL : 針對 LightType::BACKLIGHT 呼叫 setLightState(id, backlightOn)
+  HAL --> Main : Status::EX_NONE (確保裝置恢復可用螢幕亮度)
+end
+@enduml

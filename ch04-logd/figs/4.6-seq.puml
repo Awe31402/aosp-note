@@ -1,0 +1,82 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "main /\nLogcat::Run" as Main
+participant "liblog\n(logger_read / logprint)" as LibLog
+participant "EventTagMap" as TagMap
+participant "logd\n(/dev/socket/logd, logdr)" as Logd
+participant "ProcessNames\n(/proc)" as Proc
+participant "檔案系統\n/ stdout" as FS
+
+group #EFF6FF 階段一：初始化、參數解析與建立 logger_list
+  Main -> LibLog : android_log_format_new()
+  Main -> Main : getopt_long() 解析 -b/-v/-f/-r/-n/-t/-e/~--pid/~--uid/~--proto/-c/-g/-G/-S/-P
+  Main -> LibLog : SetLogFormat() -> android_log_formatFromString() + android_log_setPrintFormat()
+  Main -> LibLog : addFilterString() -> android_log_addFilterRule()
+  Main -> LibLog : android_logger_list_alloc[_time](mode, tail/time, pid)
+  loop 每個已選取的 log_id_t
+    Main -> LibLog : android_logger_open(logger_list, log_id)
+    opt 管理命令 (-c / -g / -G / -S / -p / -P)
+      LibLog -> Logd : 經 /dev/socket/logd 送出控制命令並回傳結果後結束
+    end
+  end
+  Main -> FS : SetupOutputAndSchedulingPolicy() -> OpenLogFile() (若 ro.logcat.compress 則設 FS_COMPR_FL)
+  Main -> Main : mallopt(M_PURGE_ALL, 0) + WaitForProperty("logd.ready", "true")
+end
+
+group #F0FDF4 階段二：主迴圈讀取、解碼與過濾管線
+  loop !max_count_ || print_count_ < max_count_
+    Main -> LibLog : android_logger_list_read(logger_list, &log_msg)
+    Logd --> LibLog : 經 /dev/socket/logdr 回傳已依時間排序的 struct log_msg
+    LibLog --> Main : 返回讀取長度 (非阻塞讀盡回傳 -EAGAIN 跳出)
+    Main -> Main : 檢查 log_id 合法性與 --uid 白名單
+
+    alt output_type_ == BINARY (-B)
+      Main -> FS : WriteFully(&log_msg, log_msg.len())
+    else output_type_ == TEXT 或 PROTO
+      Main -> Main : ProcessBuffer(&log_msg)
+      alt 二進位緩衝區 (EVENTS / STATS / SECURITY)
+        opt 首次遇到二進位日誌 (延遲載入)
+          Main -> TagMap : android_openEventTagMap(nullptr) (mmap event-log-tags)
+        end
+        Main -> LibLog : android_log_processBinaryLogBuffer()
+        LibLog -> TagMap : android_lookupEventTag_len() / android_lookupEventFormat_len()
+        LibLog -> LibLog : android_log_printBinaryEvent() 遞迴解碼與單位格式化
+      else 文字緩衝區 (MAIN / SYSTEM / RADIO / CRASH / KERNEL)
+        Main -> LibLog : android_log_processLogBuffer() 零複製拆解 pri/tag/msg
+      end
+      Main -> LibLog : android_log_shouldPrintLine() -> filterPriForTag()
+      Main -> Main : std::regex_search() (-e) 與 print_count_ / --print 判定
+    end
+  end
+end
+
+group #FFF7ED 階段三：格式化輸出與壓縮檔案輪轉
+  alt output_type_ == TEXT
+    Main -> FS : PrintDividers() 印出 beginning of / switch to
+    Main -> LibLog : android_log_printLogLine() -> android_log_formatLogLine()
+    LibLog -> FS : fwrite() 寫出格式化行 (含時間/色彩/UID/printable)
+  else output_type_ == PROTO
+    Main -> Proc : process_names_.Get(entry.pid) (LRU 快取 + /proc/PID/cmdline, comm)
+    Main -> FS : PrintToProto() 寫入 8B length + LogcatEntryProto bytes
+  end
+  opt out_byte_count_ / 1024 >= log_rotate_size_kb_
+    Main -> FS : RotateLogs(): fclose() -> F2FS_IOC_RELEASE_COMPRESS_BLOCKS -> 倒序 rename() -> OpenLogFile()
+  end
+end
+@enduml

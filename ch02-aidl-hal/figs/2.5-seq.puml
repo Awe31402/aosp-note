@@ -1,0 +1,72 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "App\n應用程式層" as App
+participant "框架層\n(SystemServiceRegistry /\nSystemLightsManager)" as Mgr
+participant "system_server\n(LightsService / LightImpl)" as Srv
+participant "Vendor AIDL HAL\n(android.hardware.lights-service)" as HAL
+participant "GKI 核心\n(drivers/leds/led-class.c)" as Kernel
+
+group #EFF6FF 階段一：取得 LightsManager 與開啟受保護的 LightsSession
+  App -> Mgr : context.getSystemService(LightsManager.class)
+  Mgr -> Mgr : SystemServiceRegistry 查表 + CachedServiceFetcher 狀態閘初始化
+  Mgr -> Mgr : new SystemLightsManager(ctx) -> ServiceManager.getServiceOrThrow("lights")
+  Mgr --> App : 回傳 SystemLightsManager (持有 ILightsManager 代理)
+  App -> Mgr : lightsManager.openSession()
+  Mgr -> Mgr : new SystemLightsSession() (建立本地 Binder mToken + CloseGuard)
+  Mgr -> Srv : [Binder IPC 1] ILightsManager.openSession(mToken, priority=0)
+  Srv -> Srv : openSession_enforcePermission() (CONTROL_DEVICE_LIGHTS)
+  Srv -> Srv : token.linkToDeath(this, 0) + 加入 mSessions 並依優先權降序排序
+  Srv --> Mgr : 返回成功
+  Mgr --> App : 回傳 LightsSession
+end
+
+group #F0FDF4 階段二：組裝 LightsRequest、仲裁下發並貫穿五層至核心驅動
+  App -> App : LightsRequest.Builder().addLight(light, state).build()
+  App -> Mgr : session.requestLights(request)
+  Mgr -> Mgr : sendStaticStates() 拆箱為 int[] ids 與 LightState[] states
+  Mgr -> Srv : [Binder IPC 2] ILightsManager.setLightStates(token, ids, states)
+  Srv -> Srv : setLightStates_enforcePermission() + checkRequestIsValid (拒存取系統燈)
+  Srv -> Srv : session.setRequest() -> computeAndApplyLightConfigurationsLocked()
+  note over Srv : 依 mSessions 優先權降序 putIfAbsent 仲裁 (含系統靜音覆寫)
+  Srv -> Srv : LightImpl.setColor() -> setLightLocked() 去重 -> setLightUnchecked()
+  Srv -> HAL : [Binder IPC 3] mVintfLights.get().setLightState(hwLight.id, HwLightState)
+  HAL -> HAL : BnLights 分派 -> LightsService::setLightState()
+  HAL -> Kernel : write("/sys/class/leds/.../brightness", value)
+  Kernel -> Kernel : brightness_store() -> led_set_brightness() -> led_cdev->brightness_set()
+  Kernel --> HAL : sysfs write 返回
+  HAL --> Srv : Binder 回覆 Status::ok()
+  Srv --> Mgr : 返回成功
+  Mgr --> App : requestLights() 完成
+end
+
+group #FFF7ED 階段三：正常關閉或 App 異常崩潰時的自動燈光回收
+  alt 正常關閉 (try-with-resources / close())
+    App -> Mgr : session.close()
+    Mgr -> Srv : [Binder IPC] ILightsManager.closeSession(token)
+    Srv -> Srv : closeSession_enforcePermission() -> closeSessionInternal(token)
+  else App 行程崩潰或被系統查殺
+    note over App, Srv : Binder 核心驅動偵測 App 行程終止，推送 BR_DEAD_BINDER
+    Srv -> Srv : binderDied(token) -> closeSessionInternal(token)
+  end
+  Srv -> Srv : mSessions.remove(session) + token.unlinkToDeath()
+  Srv -> Srv : computeAndApplyLightConfigurationsLocked() (交棒次高優先權會話或 turnOff())
+  Srv -> HAL : [Binder IPC] ILights.setLightState(hwLight.id, color=0 或次高會話狀態)
+  HAL -> Kernel : write("/sys/class/leds/.../brightness", 0 或新值)
+end
+@enduml

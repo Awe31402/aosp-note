@@ -1,0 +1,89 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam ClassBackgroundColor #F8FAFC
+skinparam ClassBorderColor #334155
+skinparam ClassHeaderBackgroundColor #E2E8F0
+skinparam ArrowColor #1E293B
+
+class RefBase <<libutils>> {
+}
+
+class IInterface {
+  +asBinder(IInterface*) : sp<IBinder>
+  {abstract} #onAsBinder() : IBinder*
+}
+
+class IBinder {
+  {abstract} +transact(code, data, reply, flags) : status_t
+  +queryLocalInterface(descriptor) : sp<IInterface>
+  +localBinder() : BBinder*
+  +remoteBinder() : BpBinder*
+  {abstract} +linkToDeath(recipient) : status_t
+  +addFrozenStateChangeCallback(cb) : status_t
+}
+
+class BBinder {
+  -mExtras : atomic<Extras*>
+  -mPackedData : PackedData
+  +transact(...) : status_t final
+  #onTransact(...) : status_t
+}
+
+class BpBinder {
+  -mHandle : variant<BinderHandle, RpcHandle>
+  -mStability : int32_t
+  +transact(...) : status_t final
+  +isRpcBinder() : bool
+}
+
+class BpRefBase {
+  -mRemote : IBinder* const
+  -mRefs : weakref_type*
+  #remote() : IBinder*
+}
+
+class "BnInterface<INTERFACE>" as BnInterface {
+  +queryLocalInterface(descriptor) : sp<IInterface>
+  #onAsBinder() : IBinder*
+}
+
+class "BpInterface<INTERFACE>" as BpInterface {
+  #onAsBinder() : IBinder*
+}
+
+class ProcessState {
+  -mDriverFD : int
+  -mVMStart : void*
+  -mHandleToObject : Vector<handle_entry>
+  +self() : sp<ProcessState>
+  +getStrongProxyForHandle(handle) : sp<IBinder>
+}
+
+class IPCThreadState {
+  -mProcess : sp<ProcessState>
+  -mIn : Parcel
+  -mOut : Parcel
+  +self() : IPCThreadState*
+  +transact(handle, code, data, reply, flags) : status_t
+  -talkWithDriver(doReceive) : status_t
+}
+
+RefBase <|-- IInterface
+RefBase <|-- IBinder
+RefBase <|-- BpRefBase
+RefBase <|-- ProcessState
+IBinder <|-- BBinder
+IBinder <|-- BpBinder
+IInterface <|-- BnInterface
+BBinder <|-- BnInterface
+IInterface <|-- BpInterface
+BpRefBase <|-- BpInterface
+BpRefBase o--> BpBinder : mRemote
+BpBinder ..> IPCThreadState : transact()
+IPCThreadState ..> BBinder : executeCommand() -> transact()
+IPCThreadState --> ProcessState : mProcess
+@enduml

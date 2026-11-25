@@ -1,0 +1,73 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "init 行程" as Init
+participant "logd::main" as Main
+participant "LogListener\n(logd.writer)" as Listener
+participant "SerializedLogBuffer" as Buffer
+participant "SerializedLogChunk\n/ Zstd" as Chunk
+participant "LogReader\n(logd.reader)" as Reader
+participant "LogReaderList /\nLogdNativeService" as RList
+participant "LogReaderThread\n(logd.reader.per)" as RThread
+participant "system_server\n(ILogcatManagerService)" as SysSrv
+participant "CommandListener\n(logd.control)" as Cmd
+
+group #EFF6FF 1. 啟動與初始化 (logd.rc -> main.cpp)
+  Init -> Main : 預建 logd/logdr/logdw socket 與 kmsg fd，啟動 /system/bin/logd
+  Main -> Main : DropPrivs() 降權，建立 SerializedLogBuffer::Init() (預設 256KB)
+  Main -> Reader : startListener() 監聽 /dev/socket/logdr
+  Main -> Listener : StartListener() 啟動 logd.writer 執行緒
+  Main -> Cmd : startListener() 監聽 /dev/socket/logd
+  Main -> Main : SetProperty("logd.ready", "true")，啟動 LogAudit/LogKlog/readDmesg 後 pause()
+end
+
+group #F0FDF4 2. 日誌寫入、zstd 壓縮與淘汰 (/dev/socket/logdw)
+  Listener -> Listener : HandleDataUring() 或 HandleDataSync() recvmsg + SCM_CREDENTIALS
+  Listener -> Listener : ProcessBuffer() 檢查 ucred/logId/security 權限
+  Listener -> Buffer : Log(logId, realtime, cred.uid, cred.pid, tid, msg, len)
+  Buffer -> Buffer : ShouldLog() 過濾，sequence_.fetch_add(1)，鎖定 logd_lock
+  Buffer -> Chunk : LogToLogBuffer() -> 若 !CanLog() 則 FinishWriting() 執行 ZSTD_compress 並釋放 contents_
+  Buffer -> Chunk : Log() placement new 寫入 SerializedLogEntry
+  Buffer -> Buffer : MaybePrune() -> 超限時 Prune() NotifyReadersOfPrune() 並整塊移除最舊 chunk
+  Buffer -> RList : NotifyNewLog(1 << log_id) 喚醒訂閱讀者
+  Listener -> Listener : PmsgWrite() 同步寫入 /dev/pmsg0
+end
+
+group #FFF7ED 3. 日誌訂閱、使用者授權與即時解壓 (/dev/socket/logdr)
+  Reader -> Reader : onDataAvailable() 解析 tail/start/lids/pid/dumpAndClose 與 clientHasLogCredentials()
+  alt 原生豁免 / 非特權 / 僅 events
+    Reader -> RList : AddAndRunThread(entry)
+  else 具 READ_LOGS 之一般 App
+    Reader -> RList : 惰性註冊 ILogd (LogdNativeService) 並 AddPendingThread(entry)
+    RList -> SysSrv : ILogcatManagerService::startThread(uid, gid, pid, fd)
+    SysSrv --> RList : oneway ILogd::approve() 或 decline()
+    RList -> RList : HandlePendingThread() (拒絕則 Revoke) -> AddAndRunThread()
+  end
+  RList -> RThread : Run() 啟動 logd.reader.per
+  RThread -> Buffer : FlushTo() -> SerializedFlushToState 按 sequence 合併各 log_id
+  Buffer -> Chunk : AttachReader() -> IncReaderRefCount() 執行 ZSTD_decompress 即時解壓
+  Buffer -> Buffer : 複製 entry_copy -> logd_lock.unlock() -> SocketLogWriter::Write() -> logd_lock.lock()
+  RThread -> RThread : 若為串流模式則 thread_triggered_condition_.wait() 等待新日誌喚醒
+end
+
+group #FAF5FF 4. 控制通道 (/dev/socket/logd)
+  Cmd -> Buffer : clear -> Clear(id, uid) (特權全清 / 一般 App 執行 ClearLogsByUid)
+  Cmd -> Buffer : setLogSize -> SetSize(id, size) -> MaybePrune(id)
+  Cmd -> Buffer : reinit -> Init() + PruneList::Init(nullptr) + 重讀 event-log-tags
+end
+@enduml

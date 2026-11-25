@@ -1,0 +1,57 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "C/C++ 呼叫端" as Caller
+participant "log_main.h /\nlog_system.h /\nlog_radio.h" as Macros
+participant "log_event_list.cpp\n(android_log_event_list)" as EventList
+participant "logger_write.cpp\n(liblog)" as LibLog
+participant "aborter_function\n/ Bionic" as Aborter
+participant "logd_writer.cpp +\n/dev/socket/logdw" as LogdWriter
+
+group #EFF6FF 情景一：文字日誌路徑 (ALOG* / SLOG* / RLOG*)
+  Caller -> Macros : ALOGI(fmt, ...) 或 SLOGE(...) / RLOGD(...)
+  note over Macros : LOG_NDEBUG==1 時 ALOGV/SLOGV/RLOGV 進 if(false) 僅做型別檢查
+  Macros -> LibLog : ~__android_log_print(prio, tag, ...) 或 ~__android_log_buf_print(log_id, ...)
+  LibLog -> LibLog : ~__android_log_buf_vprint(): ErrnoRestorer + ~__android_log_is_loggable()
+  LibLog -> LibLog : vsnprintf(buf[1024]) -> 組 ~__android_log_message
+  LibLog -> LibLog : ~__android_log_write_log_message(): 校驗 buffer_id / 補預設 tag
+  LibLog -> LibLog : logger_function() -> ~__android_log_logd_logger_with_timestamp()
+  LibLog -> LogdWriter : write_to_log(buffer_id, vec[3]) -> LogdWrite()
+end
+
+group #FEF2F2 情景二：致命錯誤與斷言路徑 (LOG_ALWAYS_FATAL / ALOG_ASSERT)
+  Caller -> Macros : LOG_ALWAYS_FATAL_IF(cond, ...) 或 ALOG_ASSERT(cond, ...)
+  Macros -> LibLog : android_printAssert() -> ~__android_log_assert(cond, tag, fmt, ...)
+  LibLog -> LibLog : 格式化訊息 -> write(2, buf) 輸出至 stderr
+  LibLog -> LibLog : ~__android_log_write(ANDROID_LOG_FATAL, tag, buf)
+  LibLog -> LogdWriter : ~__android_log_write_log_message() -> LogdWrite()
+  LibLog -> Aborter : ~__android_log_call_aborter(buf) -> ~__android_log_default_aborter()
+  Aborter -> Aborter : android_set_abort_message(buf) -> abort()
+end
+
+group #F0FDF4 情景三：二進位事件路徑 (LOG_EVENT_* 與 android_log_event_list)
+  Caller -> EventList : create_android_logger(tag) / android_log_event_list(tag)
+  Caller -> EventList : android_log_write_int32 / string8_len / list_begin / list_end
+  Caller -> EventList : android_log_write_list(ctx, LOG_ID_EVENTS / SECURITY / STATS)
+  note over EventList : count[0] 大於 1 回填頂層列表數；否則剝除 2B 列表標頭
+  EventList -> LibLog : ~__android_log_bwrite / stats_bwrite / security_bwrite
+  note over Caller, LibLog : 單值巨集 LOG_EVENT_INT/LONG/FLOAT/STRING 則直呼 btwrite / bswrite
+  LibLog -> LibLog : write_to_log(): 校驗 tag 長度與 LOG_ID_SECURITY UID/GID 權限
+  LibLog -> LogdWriter : LogdWrite(log_id, timestamp, vec, nr)
+end
+@enduml

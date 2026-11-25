@@ -1,0 +1,49 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam PackageBorderColor #64748B
+skinparam RectangleBackgroundColor #FFFFFF
+skinparam RectangleBorderColor #334155
+skinparam ArrowColor #1E293B
+
+package "呼叫端（同一個行程內）" #EFF6FF {
+  rectangle "原生 C++ 服務 / Client：\ndefaultServiceManager()" as CPP
+  rectangle "libbinder_ndk：\nAServiceManager_*()" as NDK
+  rectangle "Java 層 ServiceManagerProxy：\nnative getNativeServiceManager()" as JAVA
+}
+
+package "舊版 C++ ABI 轉接層" #F0FDF4 {
+  rectangle "CppBackendShim\n（繼承 android::IServiceManager，gDefaultServiceManager 單例）" as CBS
+}
+
+package "跨語言統一後端與快取層" #FFF7ED {
+  rectangle "BackendUnifiedServiceManager\n（繼承 android::os::BnServiceManager / BBinder，gUnifiedServiceManager 單例）" as BUSM
+  rectangle "BinderCacheWithInvalidation\n（mCacheForGetService，搭配 DeathRecipient 自動失效）" as CACHE
+}
+
+package "AIDL 生成代理層" #FAF5FF {
+  rectangle "android::os::BpServiceManager\n（繼承 BpInterface / BpRefBase，mTheRealServiceManager）" as BPSM
+}
+
+package "底層 Binder 代理層" #F8FAFC {
+  rectangle "BpBinder\n（handle = 0，Stability = SYSTEM / VENDOR，mHandleToObject[0]）" as BPB
+}
+
+package "Binder 驅動與遠端服務" #FEF2F2 {
+  rectangle "/dev/binder（或 /dev/vndbinder）：\ncontext->binder_context_mgr_node" as DRV
+  rectangle "servicemanager 行程：\nandroid::ServiceManager（BnServiceManager）" as SM
+}
+
+CPP --> CBS
+NDK --> CBS : 呼叫 defaultServiceManager()
+JAVA --> BUSM : JNI -> IServiceManagerFFI.cpp
+CBS --> BUSM : mUnifiedServiceManager
+BUSM --> CACHE : mCacheForGetService
+BUSM --> BPSM : mTheRealServiceManager
+BPSM --> BPB : BpRefBase::mRemote
+BPB --> DRV : ioctl(BINDER_WRITE_READ)
+DRV --> SM
+@enduml

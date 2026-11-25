@@ -1,0 +1,29 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam PackageBorderColor #64748B
+skinparam RectangleBackgroundColor #FFFFFF
+skinparam RectangleBorderColor #334155
+skinparam ArrowColor #1E293B
+
+package "使用者空間 (Vendor 分區)" #EFF6FF {
+  rectangle "AIDL HAL 服務行程\n(class hal / 專屬 UID + SELinux domain)" as HAL
+}
+
+package "GKI 核心本體 (kernel/common)" #F0FDF4 {
+  rectangle "sysfs 虛擬檔案系統\n/sys/class/leds/名稱/brightness" as SYSFS
+  rectangle "LED 類別核心\nled-class.c / led-core.c\n(leds_class, leds_wq, EXPORT_SYMBOL_GPL)" as LEDCORE
+}
+
+package "Vendor Kernel Module (.ko)" #FFF7ED {
+  rectangle "硬體 LED 驅動模組\n(如 PMIC / GPIO / PWM 驅動)" as DRV
+}
+
+HAL --> SYSFS : read / write\n(經 DAC 與 SELinux 管控)
+SYSFS --> LEDCORE : brightness_show / brightness_store
+DRV --> LEDCORE : 呼叫 KMI:\ndevm_led_classdev_register_ext()
+LEDCORE --> DRV : 回呼 brightness_set /\nbrightness_set_blocking
+@enduml
