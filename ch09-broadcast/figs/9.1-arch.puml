@@ -1,0 +1,110 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam ClassBackgroundColor #F8FAFC
+skinparam ClassBorderColor #334155
+skinparam ClassHeaderBackgroundColor #E2E8F0
+skinparam ArrowColor #1E293B
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+class ActivityManagerService <<server/am>> {
+  +mBroadcastController : BroadcastController
+  -mBroadcastQueue : BroadcastQueue
+  +registerReceiverWithFeature(...) : Intent
+  +broadcastIntentWithFeature(...) : int
+  +finishReceiver(...) : void
+}
+
+class BroadcastController <<server/am>> {
+  +mRegisteredReceivers : HashMap<IBinder, ReceiverList>
+  -mReceiverResolver : BroadcastIntentResolver
+  +mStickyBroadcasts : SparseArray<ArrayMap>
+  +registerReceiverWithFeature(...) : Intent
+  +broadcastIntentLockedTraced(...) : int
+  +finishReceiver(...) : void
+}
+
+class ReceiverList <<ArrayList<BroadcastFilter>>> {
+  +receiver : IIntentReceiver
+  +app : ProcessRecord
+  +pid / uid / userId : int
+  +binderDied() : void
+}
+
+class BroadcastFilter <<extends IntentFilter>> {
+  +receiverList : ReceiverList
+  +packageName / receiverId : String
+  +requiredPermission : String
+  +owningUid / owningUserId : int
+  +exported : boolean
+}
+
+class ProcessReceiverRecord <<ProcessRecord.mReceivers>> {
+  -mReceivers : ArraySet<ReceiverList>
+  +onCleanupApplicationRecordLocked() : void
+}
+
+class BroadcastQueueImpl <<sole BroadcastQueue>> {
+  -mProcessQueues : SparseArray<BroadcastProcessQueue>
+  -mRunnableHead : BroadcastProcessQueue
+  -mRunning : BroadcastProcessQueue[]
+  -mRunningColdStart : BroadcastProcessQueue
+  -mAnrTimer : BroadcastAnrTimer
+  +enqueueBroadcastLocked(r) : void
+  -updateRunningListLocked() : void
+  -scheduleReceiverWarmLocked(q) : boolean
+  -scheduleReceiverColdLocked(q) : boolean
+  +finishReceiverLocked(...) : boolean
+}
+
+class BroadcastProcessQueue <<per (processName, uid)>> {
+  +processName : String
+  +uid : int
+  +app : ProcessRecord
+  -mPendingUrgent : ArrayDeque<SomeArgs>
+  -mPending : ArrayDeque<SomeArgs>
+  -mPendingOffload : ArrayDeque<SomeArgs>
+  -mActive : BroadcastRecord
+  -mActiveIndex : int
+  -mRunnableAt : long
+  +updateRunnableAt() : void
+}
+
+class BroadcastRecord <<extends Binder>> {
+  +intent : Intent
+  +receivers : List<Object>
+  +delivery : int[]
+  +blockedUntilBeyondCount : int[]
+  +ordered / prioritized / deferUntilActive : boolean
+  +terminalCount / beyondCount : int
+  +isAssumedDelivered(index) : boolean
+}
+
+class BroadcastSkipPolicy <<server/am>> {
+  +shouldSkipAtEnqueueMessage(r, target) : String
+  +shouldSkipMessage(r, target) : String
+}
+
+ActivityManagerService *--> BroadcastController : mBroadcastController
+ActivityManagerService *--> BroadcastQueueImpl : mBroadcastQueue
+BroadcastController --> BroadcastQueueImpl : enqueueBroadcastLocked()\nfinishReceiverLocked()
+BroadcastController *--> ReceiverList : mRegisteredReceivers [IBinder]
+BroadcastController o--> BroadcastFilter : mReceiverResolver
+ReceiverList *--> BroadcastFilter : elements
+ProcessReceiverRecord o--> ReceiverList : mReceivers
+BroadcastQueueImpl *--> BroadcastProcessQueue : mProcessQueues [uid]\nmRunnableHead / mRunning[]
+BroadcastQueueImpl --> BroadcastSkipPolicy : mSkipPolicy
+BroadcastProcessQueue o--> BroadcastRecord : SomeArgs(record, index)\n& mActive
+
+note right of BroadcastQueueImpl
+  Android 17 關鍵演進：
+  原 BroadcastQueueModernImpl 已正式更名為
+  唯一實作 BroadcastQueueImpl；
+  全域 mRunning[] 支援溫進程多槽並行，
+  但 mRunningColdStart 同時限 1 個冷啟動。
+end note
+@enduml

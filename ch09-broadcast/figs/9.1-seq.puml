@@ -1,0 +1,48 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 290
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "發送端 / 註冊端 App\n(ContextImpl / LoadedApk)" as Caller
+participant "BroadcastController\n(system_server)" as Ctrl
+participant "BroadcastQueueImpl\n(Per-Process 排程)" as Queue
+participant "目標接收進程\n(ActivityThread)" as Target
+
+group #EFF6FF 情景一：動態廣播接收者註冊（9.2 節）
+  Caller -> Caller : registerReceiver(r, filter, RECEIVER_NOT_EXPORTED)\n-> LoadedApk.getReceiverDispatcher() 建 ReceiverDispatcher / InnerReceiver
+  Caller -> Ctrl : IActivityManager.registerReceiverWithFeature(..., InnerReceiver, filter, flags)
+  Ctrl -> Ctrl : 檢核 RECEIVER_EXPORTED/NOT_EXPORTED + MAX_RECEIVERS(1000)\n登記 mRegisteredReceivers / app.mReceivers / mReceiverResolver
+  Ctrl --> Caller : 回傳首筆匹配 Sticky Intent（若有）並將匹配 Sticky 入隊
+end
+
+group #F0FDF4 情景二：無序廣播發送與溫進程動態派發（9.3 節）
+  Caller -> Ctrl : sendBroadcast(intent) -> IActivityManager.broadcastIntentWithFeature(...)
+  Ctrl -> Ctrl : collectReceiverComponents() + mReceiverResolver.queryIntent()\n優先級合併 + SaferIntentUtils 過濾 -> new BroadcastRecord
+  Ctrl -> Queue : enqueueBroadcastLocked(r)\n[DeliveryGroup 去重 -> 拆散入各 BroadcastProcessQueue -> MSG_UPDATE_RUNNING_LIST]
+  Queue -> Queue : updateRunningListLocked() -> unfreezeTemporarily()\n-> promoteToRunningLocked() -> scheduleReceiverWarmLocked()
+  Queue -> Target : dispatchReceivers() [assumeDelivered=true -> 立即標記 DELIVERY_DELIVERED]\n-> IApplicationThread.scheduleRegisteredReceiver(...) [oneway]
+  Target -> Target : InnerReceiver.performReceive() -> mActivityThread.post(Args.getRunnable())\n-> BroadcastReceiver.onReceive(context, intent)
+end
+
+group #FEF3C7 情景三：有序廣播 / 靜態 Manifest 冷啟動與 finishReceiver 閉環（9.4 節）
+  Queue -> Queue : 有序依賴：beyondCount < blockedUntilBeyondCount[i] -> REASON_BLOCKED\n靜態冷進程：搶佔唯一 mRunningColdStart -> scheduleReceiverColdLocked() -> startProcessLocked()
+  Target -> Queue : 新進程 attachApplication -> onApplicationAttachedLocked()\n釋放 mRunningColdStart -> scheduleReceiverWarmLocked()
+  Queue -> Target : dispatchReceivers() [啟動 mAnrTimer，assumeDelivered=false]\n-> IApplicationThread.scheduleReceiver(...) [oneway]
+  Target -> Target : H.RECEIVER -> handleReceiver() -> instantiateReceiver()\n-> onReceive() [或 goAsync() 延後] -> PendingResult.finish()
+  Target -> Ctrl : IActivityManager.finishReceiver(who, resultCode, data, extras, abort) [oneway]
+  Ctrl -> Queue : finishReceiverLocked() -> 取消 mAnrTimer + 更新 beyondCount\n解除下一個有序接收者阻塞 / 全部完成後 scheduleResultTo()
+end
+@enduml

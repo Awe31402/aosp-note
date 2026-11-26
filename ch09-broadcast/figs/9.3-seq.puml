@@ -1,0 +1,47 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "發送端\n(CounterService /\nContextImpl)" as Sender
+participant "BroadcastController\n(system_server)" as Ctrl
+participant "BroadcastQueueImpl\n(AMS mHandler)" as Queue
+participant "目標進程 Binder 執行緒\n(ApplicationThread)" as TargetBinder
+participant "目標進程主執行緒\n(ActivityThread.H)" as TargetMain
+
+group #EFF6FF 1. 廣播發送、解析合併與 Per-Process 扇出入隊
+  Sender -> Ctrl : sendBroadcast(intent) [prepareToLeaveProcess]\n-> IActivityManager.broadcastIntentWithFeature(..., serialized=false)
+  Ctrl -> Ctrl : verifyBroadcastLocked() + enforceBroadcastOptionPermissionsInternal()\n-> broadcastIntentLockedTraced()
+  Ctrl -> Ctrl : collectReceiverComponents() + mReceiverResolver.queryIntent()\n依優先級合併（同級動態優先）+ SaferIntentUtils 過濾 -> new BroadcastRecord
+  Ctrl -> Queue : enqueueBroadcastLocked(r)
+  Queue -> Queue : applyDeliveryGroupPolicy(r) + mSkipPolicy.shouldSkipAtEnqueueMessage()\n逐接收者 getOrCreateProcessQueue() -> enqueueOrReplaceBroadcast()\n-> updateRunnableList() 插入 mRunnableHead -> post MSG_UPDATE_RUNNING_LIST
+  Ctrl --> Sender : 返回 BROADCAST_SUCCESS（發送端解除阻塞）
+end
+
+group #F0FDF4 2. 並發槽調度與溫進程無序動態派發
+  Queue -> Queue : mLocalCallback (MSG_UPDATE_RUNNING_LIST)\n-> updateRunningListLocked() 掃描 mRunnableHead (runnableAt <= now)
+  Queue -> Queue : unfreezeTemporarily(queue.app) -> promoteToRunningLocked()\n佔用 mRunning[slot] 並彈出 mActive -> scheduleReceiverWarmLocked()
+  Queue -> Queue : shouldSkipReceiver() [BroadcastSkipPolicy.shouldSkipMessage]\n-> dispatchReceivers() [assumeDelivered=true -> 略過 ANR 計時]
+  Queue -> TargetBinder : app.getOnewayThread().scheduleRegisteredReceiver(\nInnerReceiver, intent, ..., assumeDelivered=true) [oneway]
+  Queue -> Queue : finishReceiverActiveLocked(DELIVERY_DELIVERED)\n迴圈續派同進程下一筆，直到 shouldRetire() -> demoteFromRunningLocked()
+end
+
+group #FEF3C7 3. 目標進程接收與主執行緒執行 onReceive
+  TargetBinder -> TargetBinder : updateProcessState() -> instanceof InnerReceiver 短路直呼\nInnerReceiver.performReceive() -> ReceiverDispatcher.performReceive()
+  TargetBinder -> TargetMain : new Args(assumeDelivered=true)\n-> mActivityThread.post(args.getRunnable())
+  TargetMain -> TargetMain : 檢查 !mForgotten -> prepareToEnterProcess()\n-> receiver.setPendingResult(this) -> receiver.onReceive(mContext, intent)\n-> finish() [mAssumeDeliveredHint==true，無須發送 finishReceiver IPC]
+end
+@enduml

@@ -1,0 +1,55 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 285
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "發送端 App\n(ContextImpl)" as Sender
+participant "BroadcastController /\nBroadcastQueueImpl" as Queue
+participant "Zygote / AMS\n(進程孵化)" as Zygote
+participant "靜態接收進程 P0\n(冷啟動)" as P0
+participant "後繼進程 P1\n(有序 index=1)" as P1
+
+group #EFF6FF 1. 有序廣播入隊與跨進程依賴建立
+  Sender -> Queue : sendOrderedBroadcast(..., resultReceiver)\n[registered=false 強引用, serialized=true]
+  Queue -> Queue : new BroadcastRecord() -> calculateBlockedUntilBeyondCount()\n設 blockedUntilBeyondCount = [0, 1, ...]
+  Queue -> Queue : 扇出至 P0 (index=0, runnable) 與 P1 (index=1)\nP1 因 beyondCount(0) < 1 標記 REASON_BLOCKED 暫不入 mRunnableHead
+end
+
+group #F0FDF4 2. 靜態 Manifest 接收者冷啟動 (P0)
+  Queue -> Queue : updateRunningListLocked() 發現 P0 為冷進程\n搶佔全域唯一 mRunningColdStart 槽 -> promoteToRunningLocked()
+  Queue -> Zygote : scheduleReceiverColdLocked()\n-> mService.startProcessLocked(..., HOSTING_TYPE_BROADCAST)
+  Zygote -> P0 : fork -> ActivityThread.main()
+  P0 -> Queue : attachApplication() -> finishAttachApplicationInner()\n-> BroadcastQueueImpl.onApplicationAttachedLocked(app)
+  Queue -> Queue : 清空 mRunningColdStart = null -> scheduleReceiverWarmLocked(P0)\n-> dispatchReceivers() [assumeDelivered=false -> 啟動 mAnrTimer.start()]
+  Queue -> P0 : IApplicationThread.scheduleReceiver(intent, activityInfo, ordered=true) [oneway]
+  P0 -> P0 : H.RECEIVER -> handleReceiver() -> instantiateReceiver()\n-> onReceive(getReceiverRestrictedContext(), intent)\n[可呼叫 goAsync() 轉背景執行，或返回後自動 data.finish()]
+end
+
+group #FEF3C7 3. finishReceiver 閉環、高水位喚醒 P1 與最終 resultTo
+  alt 正常完成（含 QueuedWork 落盤後）
+    P0 -> Queue : PendingResult.sendFinished() -> IActivityManager.finishReceiver(\nmAppThread, resultCode, data, extras, abort) [oneway]
+    Queue -> Queue : finishReceiverLocked() -> 寫回結果\n-> finishReceiverActiveLocked(DELIVERY_DELIVERED) [mAnrTimer.cancel()]
+    opt abortBroadcast() == true
+      Queue -> Queue : 將 index+1..N-1 全標 DELIVERY_SKIPPED
+    end
+    Queue -> Queue : setDeliveryState() 推進 beyondCount 0 -> 1\n喚醒 P1 (invalidateRunnableAt -> mRunnableHead) + demoteFromRunningLocked(P0)
+    Queue -> P1 : P1 解除阻塞並派發 -> P1 完成回報 finishReceiver() -> beyondCount == N
+    Queue -> Sender : scheduleResultTo(r) [unfreezeTemporarily]\n-> scheduleRegisteredReceiver(resultTo, ..., assumeDelivered=true)
+  else 逾時未回報（經 AnrTimer extend 展延仍超時）
+    Queue -> Queue : BroadcastAnrTimer -> MSG_DELIVERY_TIMEOUT -> deliveryTimeoutLocked()\n-> finishReceiverActiveLocked(DELIVERY_TIMEOUT)\n-> mService.appNotResponding() + demoteFromRunningLocked()
+  end
+end
+@enduml

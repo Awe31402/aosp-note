@@ -5,8 +5,8 @@
 
 ## 目前狀態
 
-- **現在**：**第 5 章（Binder）、第 2 章（AIDL HAL）、第 4 章（`logd + liblog`）、第 6 章（`memfd / 現行 ashmem`）、第 3 章（智能指標）、第 7 章（Activity 啟動過程）與第 8 章（Service 啟動與綁定過程）皆已全章完成**；第 8 章共 3 節（2,416 行、28 個 Step、62 段程式碼、1,569 行逐行比對 0 筆不符、0 筆 `TODO: 未確認`、4 張 PlantUML 圖表全數編譯並目視檢查通過）。
-- **下一步**：進入第 9 章〈Android 系統廣播機制〉（`BroadcastQueueModernImpl`），先檢出／確認相關原始碼並撰寫 `ch09-broadcast/00-outline.md`（檢查點 1）。
+- **現在**：**第 5、2、4、6、3、7、8、9 章皆已全章完成**；第 9 章〈Android 系統廣播機制〉共 4 節（`9.1`–`9.4`，2,792 行、31 個 Step、73 段程式碼、1,978 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、32 處 `〔與 2.3 差異〕`、5 張 PlantUML 圖表全數編譯並目視檢查通過）。
+- **下一步**：進入第 10 章〈Content Provider 組件的實現原理〉（`ContentProviderHelper` / `ContentProviderRecord` / `IContentProvider`），查證 `android-17.0.0_r1` 原始碼並撰寫 `ch10-content-provider/00-outline.md`（檢查點 1）。
 - **待決事項**：
   - [x] 確認 17 對應的 GKI kernel 分支名稱：已確認為 `kernel/common` 的 `android17-6.18`（`028363aa3cfa` / `1e0de07`）
   - [x] 確認 `ch05-binder/00-outline.md`（檢查點 1 通過）
@@ -18,7 +18,10 @@
   - [x] 完成第 3 章（智能指標）大綱與全章 `3.1`–`3.4`
   - [x] 完成第 7 章（Activity 啟動過程）大綱與全章 `7.1`–`7.4`
   - [x] 完成第 8 章（Service 啟動與綁定過程）大綱與全章 `8.1`–`8.3`
-  - [ ] 撰寫並確認 `ch09-broadcast/00-outline.md`（第 9 章檢查點 1）
+  - [x] 撰寫並確認 `ch09-broadcast/00-outline.md`（第 9 章檢查點 1）
+  - [x] 確認 `ch09-broadcast/9.1-architecture-and-scenario.md`（第 9 章檢查點 2）
+  - [x] 完成第 9 章全章 `9.1`–`9.4`
+  - [ ] 撰寫並確認 `ch10-content-provider/00-outline.md`（第 10 章檢查點 1）
 
 ## 章節進度
 
@@ -33,7 +36,7 @@
 | 5 | 第 3 章 智能指標 | 智能指標（RefBase / sp / wp） | 重追（3.1–3.4 全章完成） | ✅ |
 | 6 | 第 7 章 Activity 組件的啟動過程 | Activity 啟動過程（ATMS / `ActivityStarter` / `ClientTransaction`） | 重追（7.1–7.4 全章完成） | ✅ |
 | 7 | 第 8 章 Service 組件的啟動過程 | Service 啟動與綁定過程（`ActiveServices` / FGS / `ServiceDispatcher`） | 重追（8.1–8.3 全章完成） | ✅ |
-| 8 | 第 9 章 Android 系統廣播機制 | — | 重追 | ⬜ |
+| 8 | 第 9 章 Android 系統廣播機制 | 廣播機制（`BroadcastController` / `BroadcastQueueImpl` / `BroadcastProcessQueue`） | 重追（9.1–9.4 全章完成） | ✅ |
 | 9 | 第 10 章 Content Provider 組件的實現原理 | — | 重追 | ⬜ |
 | 10 | 第 11 章 Zygote 和 System 進程的啟動過程 | — | 重追 | ⬜ |
 | 11 | 第 12 章 Android 應用程式進程的啟動過程 | — | 重追 | ⬜ |
@@ -79,3 +82,6 @@
 - **2026-11-25**：完成第 8 章〈Service 組件的啟動過程〉檢查點 1 大綱 `ch08-service/00-outline.md`（對照原書 p.451–493 與 `platform/frameworks/base` `android-17.0.0_r1` `94b4c163b` 驗證 `ActiveServices`、`ServiceMap`、`ProcessServiceRecord`、FGS 與背景啟動管制、`bindServiceInstance`、`bindToken` 與 `LoadedApk.ServiceDispatcher`，規劃為 `8.1`–`8.3` 三節並附完整 2.3 → 17 對照表），等待確認。
 - **2026-11-25**：第 8 章檢查點 1 通過；完成檢查點 2 第一節 `ch08-service/8.1-architecture-and-scenario.md`（6 個 Step、13 段原始碼、153 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`，附 PlantUML 類別圖 `figs/8.1-class.png` 與雙情景總覽時序圖 `figs/8.1-seq.png`），等待確認深度與篇幅。
 - **2026-11-25**：第 8 章檢查點 2 通過；完成第 8 章剩餘全部小節 `8.2-start-service-new-process.md`、`8.3-bind-service-in-process.md`；第 8 章全章 3 節（2,416 行、28 個 Step、62 段程式碼、1,569 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、4 張 PlantUML 圖表全數編譯並目視檢查通過），狀態推進至 ✅ 全章完成。
+- **2026-11-26**：完成第 9 章〈Android 系統廣播機制〉檢查點 1 大綱 `ch09-broadcast/00-outline.md`（對照原書 p.494–531 與 `platform/frameworks/base` `android-17.0.0_r1` `94b4c163b` 驗證 `BroadcastController`、已更名為唯一實作的 `BroadcastQueueImpl`、Per-Process `BroadcastProcessQueue`、`BroadcastRecord.blockedUntilBeyondCount[]`、`BroadcastSkipPolicy`、`BroadcastStickyCache`、`RECEIVER_EXPORTED`/`NOT_EXPORTED` 與 `AnrTimer`，規劃為 `9.1`–`9.4` 四節並附完整 2.3 → 17 對照表），等待確認。
+- **2026-11-26**：第 9 章檢查點 1 通過；完成檢查點 2 第一節 `ch09-broadcast/9.1-architecture-and-scenario.md`（516 行、6 個 Step、18 段原始碼、312 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`，附 PlantUML 架構類別圖 `figs/9.1-arch.png` 與三情景總覽時序圖 `figs/9.1-seq.png` 並目視檢查通過），等待確認深度與篇幅。
+- **2026-11-26**：第 9 章檢查點 2 通過；完成第 9 章剩餘全部小節 `9.2-register-receiver.md`、`9.3-send-and-dispatch-broadcast.md`、`9.4-ordered-manifest-and-finish.md`；第 9 章全章 4 節（2,792 行、31 個 Step、73 段程式碼、1,978 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、32 處 `〔與 2.3 差異〕`、5 張 PlantUML 圖表全數編譯並目視檢查通過），狀態推進至 ✅ 全章完成。

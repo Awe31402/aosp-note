@@ -1,0 +1,53 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Activity\n(Broadcounter)" as Act
+participant "ContextImpl /\nLoadedApk" as Client
+participant "BroadcastStickyCache\n(IpcDataCache)" as Cache
+participant "BroadcastController\n(system_server)" as Ctrl
+participant "BroadcastQueueImpl" as Queue
+
+group #EFF6FF 註冊流程：registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED)
+  Act -> Client : ContextWrapper.registerReceiver()\n-> ContextImpl.registerReceiverInternal()
+  alt receiver == null 且命中高頻 Sticky 清單
+    Client -> Cache : BroadcastStickyCache.getIntent()
+    Cache --> Act : 命中本機快取直接回傳 Intent（免 IPC）
+  else 一般動態註冊 (receiver != null)
+    Client -> Client : LoadedApk.getReceiverDispatcher(..., registered=true)\n建 ReceiverDispatcher + InnerReceiver (WeakReference)
+    Client -> Ctrl : IActivityManager.registerReceiverWithFeature(\nappThread, pkg, tag, receiverId, InnerReceiver, filter, flags)
+    Ctrl -> Ctrl : 檢核非 Isolated / 進程包名 / handleIncomingUser()
+    Ctrl -> Ctrl : synchronized(mStickyBroadcasts)：\n收集候選 Sticky + 判定 onlyProtectedBroadcasts
+    Ctrl -> Ctrl : 檢核 DYNAMIC_RECEIVER_EXPLICIT_EXPORT_REQUIRED\n（缺 EXPORTED/NOT_EXPORTED 拋 SecurityException）
+    Ctrl -> Ctrl : synchronized(mService)：\n查建 ReceiverList + 檢查 MAX_RECEIVERS(1000)\n掛載 app.mReceivers / mRegisteredReceivers
+    Ctrl -> Ctrl : 建 BroadcastFilter (含 exported) -> rl.add(bf)\n+ mReceiverResolver.addFilter(snapshot, bf)
+    opt 命中既有 Sticky 廣播 (allSticky != null)
+      Ctrl -> Queue : new BroadcastRecord(sticky=true, initialSticky=true)\n-> queue.enqueueBroadcastLocked(r)
+    end
+    Ctrl --> Client : 回傳首筆允許存取之 Sticky Intent（或 null）
+    Client -> Client : setExtrasClassLoader() + prepareToEnterProcess()
+    Client --> Act : 返回 Sticky Intent
+  end
+end
+
+group #FEF2F2 註銷對稱流程：unregisterReceiver(receiver)
+  Act -> Client : ContextImpl.unregisterReceiver(receiver)
+  Client -> Client : LoadedApk.forgetReceiverDispatcher()\n自 mReceivers 移除並設 rd.mForgotten = true
+  Client -> Ctrl : IActivityManager.unregisterReceiver(InnerReceiver)
+  Ctrl -> Ctrl : unregisterReceiverTraced()：\n若 curBroadcast != null 呼叫 finishReceiverLocked()\n自 app.mReceivers / mRegisteredReceivers / mReceiverResolver 移除
+end
+@enduml
