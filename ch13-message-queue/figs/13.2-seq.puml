@@ -1,0 +1,68 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 295
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Java Looper\n(loop / loopOnce)" as JLooper
+participant "Java MessageQueue\n(nextLegacy / nextConcurrent)" as JMQ
+participant "JNI 橋接層\n(NativeMessageQueue)" as NMQ
+participant "C++ Looper\n(pollOnce / pollInner)" as NLooper
+participant "Linux 核心\n(epoll / eventfd)" as Kernel
+
+group #EFF6FF 階段一：進入主循環與取訊分派（Steps 1–3）
+  JLooper -> JLooper : Looper.loop()\nBinder.clearCallingIdentity() 記錄基準 ident
+  loop for (;;)
+    JLooper -> JMQ : loopOnce() -> me.mQueue.next()
+    note right of JMQ
+      每次即將阻塞前 (timeout != 0)
+      先呼叫 Binder.flushPendingCommands()
+      沖刷待發 Binder 命令。
+    end note
+    JMQ -> NMQ : nativePollOnce(ptr, timeoutMillis)
+  end
+end
+
+group #F0FDF4 階段二：跨 JNI 進入 epoll_wait 休眠與喚醒（Steps 4–7）
+  NMQ -> NMQ : 暫存 mPollEnv = env, mPollObj = pollObj
+  NMQ -> NLooper : mLooper->pollOnce(timeoutMillis) -> pollInner(timeoutMillis)
+  alt sSkipEpollWaitIfPossible && originalTimeout==0 && mRequests.empty()
+    NLooper -> NLooper : 直接略過 epoll_wait() 系統呼叫（零超時快路徑）
+  else 需等待或有註冊額外 FD
+    NLooper -> Kernel : mPolling = true\nepoll_wait(epollFd, eventItems, 16, timeoutMillis)\n[無事件時讓出 CPU 睡眠]
+    Kernel --> NLooper : 被 eventfd 喚醒 / 超時 / 其他 FD 就緒\nmPolling = false
+  end
+  alt 命中 seq == WAKE_EVENT_FD_SEQ (EPOLLIN)
+    NLooper -> Kernel : awoken(): read(mWakeEventFd, &counter, 8)\n[原子歸零 eventfd 計數器]
+  end
+  NLooper -> NLooper : 派發到期原生 mMessageEnvelopes\n及 mResponses 中的 LooperCallback::handleEvent()\n[含 NativeMessageQueue::handleEvent -> Java dispatchEvents]
+  NLooper --> NMQ : 返回 POLL_WAKE / POLL_CALLBACK / POLL_TIMEOUT
+  NMQ -> NMQ : 若 mExceptionObj != NULL -> env->Throw() 延遲重拋
+  NMQ --> JMQ : nativePollOnce 返回
+end
+
+group #F3E8FF 階段三：雙模式出隊與休眠狀態更新（Steps 2–3）
+  alt Legacy 模式 (nextLegacy)
+    JMQ -> JMQ : synchronized (this):\n若隊頭 target==null (Sync Barrier) 則跳找首條 async 消息\n到期則出隊維護 mLast；未到期設 timeout；空閒則跑 IdleHandler
+  else Concurrent 模式 (nextConcurrent -> nextMessage)
+    JMQ -> JMQ : swapAndSetStackStateActive() + drainStack()\n查 mPriorityQueue / mAsyncPriorityQueue (ConcurrentSkipListSet)\n到期則 removeFromPriorityQueue() 返回\n否則 CAS sState -> Parked / TimedPark (失敗重試防漏喚醒)
+    note right of JMQ
+      DeliQueue 對照：mStack.heapSweep() + drainFreelist()
+      查雙 Min-Heap 並以 64-bit sWaitState CAS 進入休眠。
+    end note
+  end
+  JMQ --> JLooper : 返回到期 Message (若退出則 dispose 並返回 null)
+end
+@enduml

@@ -1,0 +1,54 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam PackageBackgroundColor #F8FAFC
+skinparam PackageBorderColor #334155
+skinparam ComponentBackgroundColor #FFFFFF
+skinparam ComponentBorderColor #475569
+skinparam ArrowColor #1E293B
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+package "編譯期選型（core/java/Android.bp）" {
+  component "messagequeue-gen\n依 release_package_messagequeue_implementation\n1. CombinedMessageQueue (預設雙模式)\n2. CombinedDeliMessageQueue (雙模式 + DeliQueue)\n3. LegacyMessageQueue (純傳統單鎖)" as BP #EFF6FF
+}
+
+package "Java 層（android.os，每執行緒一組）" {
+  component "Looper\n- sThreadLocal : ThreadLocal<Looper>\n- sMainLooper : Looper\n- mQueue : MessageQueue\n- mThread : Thread\n+ prepareMainLooper() / prepare()\n+ loop() -> loopOnce()" as JLooper #DBEAFE
+  component "MessageQueue (預設 CombinedMessageQueue)\n- mPtr : long (64-bit 原生指標)\n- mQuitAllowed : boolean\n- sUseConcurrent (USE_NEW_MESSAGEQUEUE / isCore)\n[Legacy] mMessages + mLast (單鎖鏈表)\n[Concurrent] sState(StackNode CAS)\n  + mPriorityQueue / mAsyncPriorityQueue\n  (ConcurrentSkipListSet)" as JMQ #DCFCE7
+  component "Handler\n- mLooper : Looper\n- mQueue : MessageQueue\n- mCallback : Callback\n- mAsynchronous : boolean\n+ createAsync() / sendMessage*()\n+ dispatchMessage()" as JHandler #F0FDF4
+}
+
+package "JNI 橋接層（core/jni/android_os_MessageQueue.cpp）" {
+  component "NativeMessageQueue\n: public MessageQueue (RefBase), public LooperCallback\n- mLooper : sp<Looper>\n- mPollEnv / mPollObj / mExceptionObj\n+ pollOnce() / wake()\n+ setFileDescriptorEvents() / handleEvent()" as NMQ #F3E8FF
+}
+
+package "C++ 原生層（system/core/libutils/Looper.cpp）" {
+  component "android::Looper\n- gThreadLocalLooper : thread_local sp<Looper>\n- mWakeEventFd : unique_fd (eventfd)\n- mEpollFd : unique_fd (epoll_create1)\n- mRequests : map<SequenceNumber, Request>\n- mMessageEnvelopes : Vector<MessageEnvelope>\n+ pollOnce() / pollInner() / wake() / awoken() / addFd()" as NLooper #FEF3C7
+}
+
+package "Linux 核心（epoll + eventfd）" {
+  component "epoll 實例 (EPOLL_CLOEXEC)\n監聽 WAKE_EVENT_FD_SEQ(=1) 與註冊 FD\nepoll_wait() 睡眠 / 喚醒" as Epoll #FFEDD5
+  component "eventfd (EFD_NONBLOCK | EFD_CLOEXEC)\n單一 64-bit 核心計數器\n(取代 2.3 的雙 FD pipe)" as EventFd #FEE2E2
+}
+
+BP ..> JMQ : 編譯期複製產出\nandroid/os/MessageQueue.java
+JHandler --> JLooper : 綁定目標執行緒
+JHandler --> JMQ : enqueueMessage()
+JLooper *-- JMQ : mQueue
+JMQ --> NMQ : long mPtr (incStrong / decStrong)\nnativeInit / nativePollOnce / nativeWake
+NMQ *-- NLooper : sp<Looper> mLooper
+NLooper --> Epoll : epoll_create1 / epoll_ctl / epoll_wait
+NLooper --> EventFd : wake() write(uint64_t 1)\nawoken() read(uint64_t)
+Epoll ..> EventFd : 監聽 EPOLLIN (seq=1)
+
+note right of JMQ
+  若編譯採用 CombinedDeliMessageQueue，
+  則無鎖模式改由 MessageStack
+  (Treiber Stack + 雙 Min-Heap + 64-bit mWaitState CAS)
+  取代 ConcurrentSkipListSet。
+end note
+@enduml

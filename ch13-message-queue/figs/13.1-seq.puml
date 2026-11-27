@@ -1,0 +1,55 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 295
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "呼叫端\n(ActivityThread / HandlerThread)" as Caller
+participant "Java Looper\n(Looper.java)" as JLooper
+participant "Java MessageQueue\n(CombinedMessageQueue)" as JMQ
+participant "JNI 橋接層\n(NativeMessageQueue)" as NMQ
+participant "C++ Looper\n(libutils/Looper.cpp)" as NLooper
+participant "Linux 核心\n(eventfd / epoll)" as Kernel
+
+group #EFF6FF 階段一：綁定執行緒局部 Looper（Step 1）
+  Caller -> JLooper : Looper.prepareMainLooper() [quitAllowed=false]\n或 Looper.prepare() [quitAllowed=true]
+  JLooper -> JLooper : 檢查 sThreadLocal.get() == null\n(每執行緒僅能建立一個 Looper)
+  JLooper -> JLooper : sThreadLocal.set(new Looper(quitAllowed))\n[主執行緒另存 sMainLooper = myLooper()]
+end
+
+group #F0FDF4 階段二：建立 MessageQueue 與雙模式判定（Step 2）
+  JLooper -> JMQ : mQueue = new MessageQueue(quitAllowed)
+  JMQ -> JMQ : getUseConcurrent() -> computeUseConcurrent()\n依 USE_NEW_MESSAGEQUEUE (API>36) / Flags / isCore()\n鎖定 sUseConcurrent (Legacy vs Concurrent)
+  JMQ -> NMQ : mPtr = nativeInit() [64-bit jlong]
+end
+
+group #F3E8FF 階段三：建立 NativeMessageQueue 與 C++ Looper（Steps 3–4）
+  NMQ -> NMQ : android_os_MessageQueue_nativeInit()\nnew NativeMessageQueue() [繼承 RefBase + LooperCallback]
+  NMQ -> NLooper : Looper::getForThread() == NULL\n-> new Looper(false) -> Looper::setForThread(mLooper)
+  NLooper -> Kernel : mWakeEventFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)\n[單一 FD，取代 2.3 的雙 FD pipe()]
+  NLooper -> NLooper : rebuildEpollLocked()
+  NLooper -> Kernel : mEpollFd = epoll_create1(EPOLL_CLOEXEC)\nepoll_ctl(EPOLL_CTL_ADD, mWakeEventFd, EPOLLIN, data.u64=1)
+  NLooper --> NMQ : 返回 sp<Looper>
+  NMQ -> NMQ : nativeMessageQueue->incStrong(env)
+  NMQ --> JMQ : 返回 reinterpret_cast<jlong>(nativeMessageQueue)
+end
+
+group #FFF7ED 階段四：零超時優化設定（Step 4）
+  JMQ -> JMQ : 記錄 mLooperThread / mThreadName / mTid
+  JMQ -> NLooper : setSkipEpollWaitForZeroTimeout(mPtr)\n-> Looper::setSkipEpollWaitForZeroTimeout()\n[sSkipEpollWaitIfPossible = true]
+  JMQ --> JLooper : MessageQueue 建構完成
+  JLooper --> Caller : prepare 完成，準備進入 Looper.loop() (13.2 節)
+end
+@enduml

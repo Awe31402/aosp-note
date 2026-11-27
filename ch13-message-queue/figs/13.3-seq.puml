@@ -1,0 +1,61 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 295
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "發送端執行緒\n(Binder / Worker)" as Sender
+participant "Handler\n(目標執行緒 Handler)" as Handler
+participant "Java MessageQueue\n(Legacy / Concurrent / Deli)" as JMQ
+participant "JNI 橋接層\n(NativeMessageQueue)" as NMQ
+participant "C++ Looper\n(libutils/Looper.cpp)" as NLooper
+participant "Linux 核心\n(eventfd / epoll)" as Kernel
+
+group #EFF6FF 階段一：Handler 封裝與時間計算（Step 1）
+  Sender -> Handler : sendMessage(msg) / sendMessageDelayed(msg, delay)\n或 post(Runnable) / sendMessageAtFrontOfQueue(msg)
+  Handler -> Handler : sendMessageAtTime(msg, uptimeMillis)\n-> enqueueMessage(mQueue, msg, uptimeMillis)\n設 msg.target=this, msg.workSourceUid\n若 mAsynchronous 則 msg.setAsynchronous(true)
+  Handler -> JMQ : mQueue.enqueueMessage(msg, uptimeMillis)
+end
+
+group #F0FDF4 階段二：雙模式入隊與喚醒條件判定（Steps 2–4）
+  JMQ -> JMQ : 檢核 msg.target != null\n[target==null 僅允許 postSyncBarrier() 使用]
+  alt Legacy 模式 (enqueueMessageLegacy)
+    JMQ -> JMQ : synchronized (this):\n頭插 (p==null / when==0 / when<p.when) -> needWake = mBlocked\n尾插 (when >= mLast.when) -> O(1) 接 mLast.next\n若隊頭為 Sync Barrier 且本消息為首條 async -> needWake = true
+  else Concurrent 模式 (enqueueMessageConcurrent -> enqueueMessageUnchecked)
+    alt 發送端 == mLooperThread
+      JMQ -> JMQ : 直插 mPriorityQueue / mAsyncPriorityQueue\n若 !mMessageDirectlyQueued -> nativeWake(mPtr)
+    else 跨執行緒發送（無鎖 CAS）
+      JMQ -> JMQ : 配發 insertSeq，建 MessageNode\n迴圈讀 sState (ACTIVE / PARKED / TIMEDPARK / MessageNode)\nsState.compareAndSet(this, old, node)
+      note right of JMQ
+        DeliQueue 對照：mStack.pushMessage(msg) 壓入 Treiber Stack，
+        再以 64-bit sWaitState.compareAndSet() 判斷屏障與截止時間。
+      end note
+    end
+  end
+end
+
+group #F3E8FF 階段三：安全跨 JNI 寫入 eventfd 喚醒（Step 5）
+  alt 需要喚醒目標執行緒 (needWake / wakeNeeded)
+    JMQ -> JMQ : [Concurrent] concurrentWake():\nincrementMptrRefs() 防止與 quit()/dispose() UAF 競態
+    JMQ -> NMQ : nativeWake(mPtr) [64-bit jlong]
+    NMQ -> NLooper : NativeMessageQueue::wake() -> mLooper->wake()
+    NLooper -> Kernel : uint64_t inc = 1;\nwrite(mWakeEventFd, &inc, sizeof(uint64_t))
+    Kernel --> NLooper : eventfd 計數器 +1，觸發 EPOLLIN\n喚醒阻塞於 epoll_wait() 的目標執行緒 (13.2 節)
+    NMQ --> JMQ : 返回；[Concurrent] decrementMptrRefs()
+  end
+  JMQ --> Handler : 返回 true
+  Handler --> Sender : 返回 true
+end
+@enduml

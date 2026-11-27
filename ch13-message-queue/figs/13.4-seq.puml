@@ -1,0 +1,69 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 295
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Looper\n(loopOnce)" as Looper
+participant "MessageQueue\n(next / IdleHandler)" as MQ
+participant "Handler\n(dispatchMessage)" as Handler
+participant "Message\n(obtain / recycleUnchecked)" as Msg
+participant "IdleHandler\n(e.g. GcIdler)" as Idle
+
+group #EFF6FF 階段一：取訊、退出判定與派發前監控（Step 1）
+  Looper -> MQ : Message msg = me.mQueue.next()
+  alt msg == null (隊列已退出並 dispose)
+    MQ --> Looper : null -> loopOnce() 返回 false，結束 Looper.loop()
+  else 取得到期 Message
+    MQ --> Looper : 返回 msg
+    Looper -> Looper : Perfetto message_queue_receive / mLogging / Trace.traceBegin\nsObserver.messageDispatchStarting()\nThreadLocalWorkSource.setUid(msg.workSourceUid)\nLooperDoctor.startMessageTimer()
+  end
+end
+
+group #F0FDF4 階段二：Handler 三級優先分派（Step 2）
+  Looper -> Handler : msg.target.dispatchMessage(msg) -> dispatchMessageImpl(msg)
+  alt 1. msg.callback != null (Handler.post(Runnable))
+    Handler -> Handler : handleCallback(msg) -> msg.callback.run()
+  else 2. mCallback != null 且 mCallback.handleMessage(msg) == true
+    Handler -> Handler : 攔截消費完成並返回
+  else 3. 預設落入子類覆寫
+    Handler -> Handler : handleMessage(msg)
+  end
+  Handler --> Looper : 派發完成
+end
+
+group #F3E8FF 階段三：收尾告警、身分核驗與物件回收（Steps 1, 3）
+  Looper -> Looper : Thread.interrupted() / observer.messageDispatched()\nfinally: 停 LooperDoctor、還原 WorkSource、Trace.traceEnd\nshowSlowLog(delivery / dispatch) + 核驗 Binder.clearCallingIdentity()
+  Looper -> Msg : msg.recycleUnchecked()
+  alt Legacy 模式 (!getUseConcurrent)
+    Msg -> Msg : clear() 並 synchronized(sPoolSync) 歸還 sPool (上限 50)
+  else Concurrent / DeliQueue 模式 (getUseConcurrent)
+    Msg -> Msg : 停用 sPool！僅 clearReferenceFields() + markInUse()\n[避免無鎖佇列遍歷觸發 CAS ABA 問題，交由 ART GC 回收]
+  end
+end
+
+group #FFF7ED 階段四：隊列空閒時觸發 IdleHandler（Step 4）
+  Looper -> MQ : 下一輪 me.mQueue.next() 無到期消息\n且 pendingIdleHandlerCount < 0 && isIdle()
+  MQ -> MQ : 鎖內快照 mIdleHandlers -> mPendingIdleHandlers\n[Concurrent 採獨立細粒度鎖 mIdleHandlersLock]
+  loop 鎖外逐一執行已註冊 IdleHandler
+    MQ -> Idle : keep = idler.queueIdle()
+    Idle --> MQ : 返回 boolean keep
+    opt !keep
+      MQ -> MQ : 自動自 mIdleHandlers 移除該 idler
+    end
+  end
+  MQ -> MQ : pendingIdleHandlerCount = 0; timeout = 0\n立即重跑迴圈複檢，避免遺漏期間抵達的新消息
+end
+@enduml

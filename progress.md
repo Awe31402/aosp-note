@@ -5,8 +5,8 @@
 
 ## 目前狀態
 
-- **現在**：**第 5、2、4、6、3、7、8、9、10、11、12 章皆已全章完成**；第 12 章〈Android 應用程式進程的啟動過程〉共 3 節（`12.1`–`12.3`，2,036 行、18 個 Step、40 段程式碼、1,208 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、18 處 `〔與 2.3 差異〕`、5 張 PlantUML 圖表全數編譯並目視檢查通過）。
-- **下一步**：進入第 13 章〈Android 應用程式的消息處理機制〉（`Looper`、`LegacyMessageQueue` / 無鎖 `CombinedDeliMessageQueue`、`android_os_MessageQueue.cpp` / `NativeMessageQueue`、`system/core/libutils/Looper.cpp` 與 `Handler`），查證 `android-17.0.0_r1` 原始碼並撰寫 `ch13-message-queue/00-outline.md`（檢查點 1）。
+- **現在**：**第 5、2、4、6、3、7、8、9、10、11、12、13 章皆已全章完成**；第 13 章〈Android 應用程式的消息處理機制〉共 4 節（`13.1`–`13.4`，1,735 行、20 個 Step、30 段程式碼、1,013 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、20 處 `〔與 2.3 差異〕`、5 張 PlantUML 圖表全數編譯並目視檢查通過）。
+- **下一步**：進入第 14 章〈Android 應用程式的鍵盤消息處理機制〉（Input 系統：`InputManagerService`、`InputReader` / `InputDispatcher`、`InputChannel` socketpair、`ViewRootImpl` `WindowInputEventReceiver` 與按鍵事件派發），查證 `android-17.0.0_r1` 原始碼並撰寫 `ch14-input/00-outline.md`。
 - **待決事項**：
   - [x] 確認 17 對應的 GKI kernel 分支名稱：已確認為 `kernel/common` 的 `android17-6.18`（`028363aa3cfa` / `1e0de07`）
   - [x] 確認 `ch05-binder/00-outline.md`（檢查點 1 通過）
@@ -30,7 +30,9 @@
   - [x] 撰寫並確認 `ch12-app-process/00-outline.md`（第 12 章檢查點 1）
   - [x] 確認 `ch12-app-process/12.1-create-app-process.md`（第 12 章檢查點 2）
   - [x] 完成第 12 章全章 `12.1`–`12.3`
-  - [ ] 撰寫並確認 `ch13-message-queue/00-outline.md`（第 13 章檢查點 1）
+  - [x] 撰寫並確認 `ch13-message-queue/00-outline.md`（第 13 章檢查點 1）
+  - [x] 完成第 13 章全章 `13.1`–`13.4`
+  - [ ] 撰寫第 14 章〈Input 系統〉大綱與正文 `ch14-input/`
 
 ## 章節進度
 
@@ -49,7 +51,7 @@
 | 9 | 第 10 章 Content Provider 組件的實現原理 | Content Provider（`ContentProviderHelper` / `CursorWindow` / `ContentService`） | 重追（10.1–10.4 全章完成） | ✅ |
 | 10 | 第 11 章 Zygote 和 System 進程的啟動過程 | Zygote 與 `system_server` 啟動（`init.zygote64.rc` / `ZygoteInit` / `ZygoteServer` / `SystemServer`） | 重追（11.1–11.3 全章完成） | ✅ |
 | 11 | 第 12 章 Android 應用程式進程的啟動過程 | 應用程式進程啟動（`ProcessList` / `ZygoteProcess` / `forkSimpleApps` & USAP / `ActivityThread.main`） | 重追（12.1–12.3 全章完成） | ✅ |
-| 12 | 第 13 章 Android 應用程式的消息處理機制 | — | 重追 | ⬜ |
+| 12 | 第 13 章 Android 應用程式的消息處理機制 | 消息處理機制（`Looper` / `CombinedMessageQueue` & DeliQueue / `eventfd` + `epoll` / `Handler`） | 重追（13.1–13.4 全章完成） | ✅ |
 | 13 | 第 14 章 Android 應用程式的鍵盤消息處理機制 | Input 系統 | 重追 | ⬜ |
 | 14 | 第 15 章 Android 應用程式線程的消息循環模型 | — | 重追 | ⬜ |
 | 15 | 第 16 章 Android 應用程式的安裝和顯示過程 | — | 重追 | ⬜ |
@@ -103,3 +105,5 @@
 - **2026-11-27**：完成第 12 章〈Android 應用程式進程的啟動過程〉檢查點 1 大綱 `ch12-app-process/00-outline.md`（對照原書 p.638–652 與 `platform/frameworks/base` `94b4c163b`、`platform/frameworks/native` `ae266dc` 驗證 `ProcessList` 非同步啟動與 `startSeq`/`mPendingStarts`、`ZygoteProcess` 雙 ABI 與 USAP、`ZygoteConnection.processCommand` 預設 `forkSimpleApps`（`nativeForkRepeatedly`）與 USAP / `forkAndSpecialize` 三路徑、`ZygoteInit.nativeZygoteInit` → `AppRuntime::onZygoteInit` → `ProcessState::startThreadPool`、`RuntimeInit.MethodAndArgsCaller` `Runnable` 跳板與 `ActivityThread.main` 的 `seq=` / `--use-deliqueue=` 處理，規劃為 `12.1`–`12.3` 三節並附完整 2.3 → 17 對照表），等待確認。
 - **2026-11-27**：第 12 章檢查點 1 通過；完成檢查點 2 第一節 `ch12-app-process/12.1-create-app-process.md`（1,266 行、10 個 Step、22 段原始碼、814 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、10 處 `〔與 2.3 差異〕`，附 PlantUML 架構圖 `figs/12.1-arch.png` 與時序圖 `figs/12.1-seq.png` 並目視檢查通過），等待確認深度與篇幅。
 - **2026-11-27**：第 12 章檢查點 2 通過；完成第 12 章剩餘全部小節 `12.2-start-binder-thread-pool.md`、`12.3-create-message-loop.md`；第 12 章全章 3 節（2,036 行、18 個 Step、40 段程式碼、1,208 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、18 處 `〔與 2.3 差異〕`、5 張 PlantUML 圖表全數編譯並目視檢查通過），狀態推進至 ✅ 全章完成。
+- **2026-11-27**：完成第 13 章〈Android 應用程式的消息處理機制〉檢查點 1 大綱 `ch13-message-queue/00-outline.md`（對照原書 p.653–674 與 `platform/frameworks/base` `94b4c163b`、`platform/system/core` `545d248` 驗證 `Android.bp` `messagequeue-gen` 三實作選型、`CombinedMessageQueue` 雙模式〔Legacy + Concurrent `ConcurrentSkipListSet`/`StackNode`〕、`CombinedDeliMessageQueue` 無鎖 DeliQueue、Sync Barrier、`NativeMessageQueue` 64-bit `mPtr` + `RefBase` + `LooperCallback`、`libutils/Looper` `eventfd` + `epoll_create1` + `SequenceNumber` + 零超時跳過 `epoll_wait`、`Message` 併發停用 `sPool`、`Looper.loopOnce` 監控與 `IdleHandler`，規劃為 `13.1`–`13.4` 四節並附完整 2.3 → 17 對照表），等待確認。
+- **2026-11-27**：依使用者指示直接完成第 13 章全章 `13.1-create-message-queue.md`、`13.2-message-loop.md`、`13.3-send-message.md`、`13.4-handle-message-and-idle.md`（共 4 節、1,735 行、20 個 Step、30 段程式碼、1,013 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、20 處 `〔與 2.3 差異〕`、5 張 PlantUML 圖表全數編譯並目視檢查通過），狀態推進至 ✅ 全章完成。
