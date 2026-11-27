@@ -1,0 +1,66 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 295
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "app_process64\n(app_main.cpp)" as AppMain
+participant "AndroidRuntime\n(C++ / ART)" as Runtime
+participant "ZygoteInit\n(Java)" as ZInit
+participant "Zygote Native\n(com_android_internal_os_Zygote.cpp)" as ZNative
+participant "ZygoteServer\n(Java)" as ZServer
+
+group #EFF6FF 階段一：Native 入口、建立 ART VM 與註冊 JNI（Steps 1–2）
+  AppMain -> AppMain : main(): computeArgBlockSize()\n分離 -Xzygote 與 ~--zygote / ~--start-system-server\nmaybeCreateDalvikCache() + 拼 ~--abi-list= + setArgv0("zygote64")
+  AppMain -> Runtime : runtime.start("com.android.internal.os.ZygoteInit", args, true)
+  Runtime -> Runtime : 驗證 ANDROID_ART_ROOT / I18N / TZDATA\nJniInvocation::Init() -> startVm() -> JNI_CreateJavaVM() [ART]
+  Runtime -> Runtime : startReg(env): javaCreateThreadEtc + register_jni_procs(gRegJNI)
+  Runtime -> ZInit : CallStaticVoidMethod(ZygoteInit.main, strArray)
+end
+
+group #F0FDF4 階段二：單執行緒安全預載與雙 Socket 建置（Steps 3–5）
+  ZInit -> ZInit : ZygoteHooks.startZygoteNoThreadCreation() + Os.setpgid(0, 0)\nRuntimeInit.preForkInit() + 解析 ~--enable-lazy-preload / ~--socket-name=
+  ZInit -> ZInit : preload():\n降權 UID/GID=9999 載入 /system/etc/preloaded-classes + preloadDexCaches()\nResources / HAL / GraphicsDriver / WebView / JCA + gcAndFinalize()
+  ZInit -> ZNative : Zygote.initNativeState(isPrimaryZygote)\nandroid_get_control_socket() + initUnsolSocketToSystemServer()\n+ selinux_android_seapp_context_init() + UnmountStorageOnInit()
+  ZInit -> ZInit : ZygoteHooks.stopZygoteNoThreadCreation()
+  ZInit -> ZServer : new ZygoteServer(isPrimaryZygote)\ncreateManagedSocketFromInitSocket("zygote" & "usap_pool_primary")\n+ getUsapPoolEventFD() + fetchUsapPoolPolicyProps()
+end
+
+group #FEF3C7 階段三：孵化 system_server 與死亡連動保護（Steps 6–7）
+  ZInit -> ZInit : forkSystemServer(): Os.capget() 交集 capabilities\n組硬編碼 args (uid/gid=1000) + MTE/TBI + GWP-ASan 旗標
+  ZInit -> ZNative : Zygote.forkSystemServer() [ZygoteHooks.preFork()]\n-> nativeForkSystemServer() -> zygote::ForkCommon()
+  ZNative -> ZNative : SetSignalHandlers(SigChldHandler) + BlockSignal(SIGCHLD)\n關 log/stats fd + FileDescriptorTable 檢查 + mallopt(M_PURGE_ALL) + fork()
+  note right of ZNative
+    pid == 0 (子進程): SpecializeCommon() -> 進入 11.3 節
+    pid > 0 (父進程): 記錄 gSystemServerPid + waitpid(WNOHANG)
+    日後若 system_server 死亡，SigChldHandler 立刻 kill(getpid(), SIGKILL)
+  end note
+  ZNative --> ZInit : 父進程返回 pid > 0 -> ZygoteHooks.postForkCommon() -> 返回 null
+end
+
+group #F3E8FF 階段四：ZygoteServer 多工輪詢循環（Step 8）
+  ZInit -> ZServer : zygoteServer.runSelectLoop(abiList)
+  loop 永駐待命（父進程永不退出；子進程返回 Runnable）
+    ZServer -> ZServer : 組裝 StructPollfd[] (mZygoteSocket + peers + USAP FDs)\nOs.poll(pollFDs, pollTimeoutMs)
+    alt pollIndex >= usapPoolEventFDIndex
+      ZServer -> ZServer : 讀 USAP eventFD / reporting pipe -> removeUsapTableEntry() -> 視需要 fillUsapPool()
+    else 0 < pollIndex < usapPoolEventFDIndex
+      ZServer -> ZServer : connection.processCommand(this, multipleForksOK)\n(子進程 mIsForkChild==true 返回 Runnable 回 ZygoteInit.main 執行 caller.run())
+    else pollIndex == 0
+      ZServer -> ZServer : acceptCommandPeer() -> 新增 ZygoteConnection 至 peers / socketFDs
+    end
+  end
+end
+@enduml

@@ -1,0 +1,60 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam PackageBackgroundColor #F8FAFC
+skinparam PackageBorderColor #334155
+skinparam ComponentBackgroundColor #FFFFFF
+skinparam ComponentBorderColor #475569
+skinparam ArrowColor #1E293B
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+package "根啟動腳本（platform/system/core/rootdir）" {
+  component "init.rc\nimport init.${ro.zygote}.rc\non zygote-start\n(wait odsign.verification.done=1)" as InitRc #EFF6FF
+  component "init.zygote64.rc\nservice zygote (app_process64)\nsocket zygote / usap_pool_primary\n660 root system | critical" as Rc64 #E0F2FE
+  component "init.zygote64_32.rc\nimport init.zygote64.rc\n+ zygote_secondary (app_process32)\n~--enable-lazy-preload" as Rc6432 #E0F2FE
+  component "init.zygote32.rc\nservice zygote (app_process)\nrlimit nofile 32768" as Rc32 #E0F2FE
+}
+
+package "init 守護行程（PID 1，C++）" {
+  component "ServiceParser::ParseSocket\n建立 SocketDescriptor 清單" as Parser #F0FDF4
+  component "Service::Start()\n1. ComputeContextFromExecutable\n2. SocketDescriptor::Create() [fork 前!]\n   CreateSocket(SOCK_CLOEXEC + SELinux)\n3. fork() + createProcessGroup()\n4. 寫入 cgroups_activated FIFO\n5. 返回時 RAII 關閉父進程 FD" as Start #DCFCE7
+  component "Service::Reap()\n死亡時 KillProcessGroup(SIGKILL)\nunlink /dev/socket/* + onrestart" as Reap #FEE2E2
+}
+
+package "核心與 /dev/socket 節點" {
+  component "/dev/socket/zygote\n(0660 root:system, SOCK_STREAM)" as SockZygote #FEF3C7
+  component "/dev/socket/usap_pool_primary\n(0660 root:system, SOCK_STREAM)" as SockUsap #FEF3C7
+}
+
+package "新孵化子進程 -> Zygote 進程" {
+  component "Service::RunService()\n1. Descriptor::Publish()\n   清除 FD_CLOEXEC\n   setenv ANDROID_SOCKET_*\n2. 讀 cgroups_activated FIFO\n3. SetProcessAttributesAndCaps\n4. ExpandArgsAndExecv()" as RunSvc #F3E8FF
+  component "/system/bin/app_process64\n(11.2 節 app_main.cpp::main)\nandroid_get_control_socket()\n+ getsockname() 路徑核驗" as AppProc #EDE9FE
+}
+
+InitRc --> Rc64 : ro.zygote=zygote64
+InitRc --> Rc6432 : ro.zygote=zygote64_32
+InitRc --> Rc32 : ro.zygote=zygote32
+
+Rc64 --> Parser
+Rc6432 --> Parser
+Parser --> Start : Service::sockets_
+
+Start --> SockZygote : bind() + lchown/fchmodat
+Start --> SockUsap : bind() + lchown/fchmodat
+Start --> RunSvc : fork() + 繼承 FD\n+ cgroups_activated FIFO
+RunSvc --> AppProc : execv() 保留雙 Socket FD\n與 ANDROID_SOCKET_* 環境變數
+AppProc ..> Reap : 異常死亡 (SIGCHLD)
+Reap ..> SockZygote : unlink()
+
+note right of Start
+  關鍵演進（2.3 -> 17）：
+  Socket 改於 fork() 前由 init 同步建立，
+  避免其他相依服務競態；
+  建立時強制 SOCK_CLOEXEC，
+  僅子進程 Publish() 才清掉 FD_CLOEXEC。
+end note
+@enduml

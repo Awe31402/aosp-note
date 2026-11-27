@@ -1,0 +1,56 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 295
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "Zygote Native\n(SpecializeCommon)" as ZNative
+participant "ZygoteInit / RuntimeInit\n(Java)" as ZInit
+participant "AppRuntime / Binder\n(C++ / ProcessState)" as Binder
+participant "SystemServer\n(主執行緒)" as SysSrv
+participant "SystemServiceManager\n(生命週期 / Phases)" as SSM
+
+group #EFF6FF 階段一：子進程原生特化與 SELinux 轉域（Step 1）
+  ZNative -> ZNative : fork() 返回 pid == 0 -> SpecializeCommon()\ncreateProcessGroup(1000) + SystemMemoryProcess cgroup
+  ZNative -> ZInit : [尚在 Zygote SELinux 域] 預呼 getOrCreateSystemServerClassLoader()\n+ prefetchStandaloneSystemServerJars()
+  ZNative -> ZNative : SetUpSeccompFilter() -> setresgid/setresuid(1000)\nMTE/TBI + GWP-ASan + SetCapabilities() + UnsetChldSignalHandler()
+  ZNative -> ZNative : callPostForkSystemServerHooks()\nselinux_android_setcon("u:r:system_server:s0") + setpriority(0)
+end
+
+group #F0FDF4 階段二：關 Socket、啟 Binder 執行緒池與 Runnable 跳板（Steps 2–4）
+  ZNative --> ZInit : 返回 ZygoteInit.forkSystemServer() (pid == 0)\nwaitForSecondaryZygote() + zygoteServer.closeServerSocket()
+  ZInit -> ZInit : handleSystemServerProcess():\nOs.umask(0077) + Process.setArgV0("system_server") + 設 ContextClassLoader
+  ZInit -> Binder : ZygoteInit.zygoteInit() -> nativeZygoteInit()\n-> AppRuntime::onZygoteInit() -> ProcessState::self()->startThreadPool()
+  ZInit -> ZInit : RuntimeInit.applicationInit() -> findStaticMain("com.android.server.SystemServer")\n返回 MethodAndArgsCaller (Runnable) 退回 ZygoteInit.main()
+  ZInit -> SysSrv : r.run() 反射呼叫 SystemServer.main() -> new SystemServer().run()
+end
+
+group #FEF3C7 階段三：主執行緒初始化與 Bootstrap / Core 服務（Steps 5–7）
+  SysSrv -> SysSrv : BinderInternal.setMaxThreads(31) + Looper.prepareMainLooper()\nSystemServerInitThreadPool.start() + System.loadLibrary("android_servers")\nApplicationSharedMemory.create() + createSystemContext() [ActivityThread.systemMain()]
+  SysSrv -> SSM : new SystemServiceManager(mSystemContext)\n+ LocalServices.addService(SystemServiceManager.class, ...)
+  SysSrv -> SSM : startBootstrapServices():\nWatchdog / Installer / startIStatsService / startMemtrackProxyService\nATMS / AMS / Power / Lights / Display -> PHASE_WAIT_FOR_DEFAULT_DISPLAY (100)
+  SysSrv -> SysSrv : PackageManagerService.main() -> UserManagerService\n-> mActivityManagerService.setSystemProcess() [註冊 "activity" + 建系統 ProcessRecord]
+  SysSrv -> SSM : startCoreServices():\nSystemConfig / Battery / UsageStats / WebViewUpdate / GpuService 等
+end
+
+group #F3E8FF 階段四：Other / APEX 服務、Boot Phases 與主迴圈永駐（Step 8）
+  SysSrv -> SSM : startOtherServices():\nContentService.Lifecycle + installSystemProviders() + InputManagerService\n-> PHASE_WAIT_FOR_SENSOR_SERVICE (200)
+  SysSrv -> SysSrv : WindowManagerService.main() + ServiceManager.addService("window")\n背景執行緒 startISensorManagerService() + inputManager.start()
+  SysSrv -> SSM : 推進 PHASE_LOCK_SETTINGS_READY (480) -> PHASE_SYSTEM_SERVICES_READY (500)\n-> wm.systemReady() -> PHASE_DEVICE_SPECIFIC_SERVICES_READY (520)
+  SysSrv -> SSM : mActivityManagerService.systemReady() 回呼內:\nPHASE_ACTIVITY_MANAGER_READY (550) -> PHASE_THIRD_PARTY_APPS_CAN_START (600)
+  SysSrv -> SSM : startApexServices(): 動態載入 Mainline APEX 服務 + sealStartedServices()
+  SysSrv -> SysSrv : Looper.loop() 永久運行（31 條 Binder 執行緒持續服務全機 IPC）
+end
+@enduml

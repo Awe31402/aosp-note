@@ -1,0 +1,57 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 290
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "init 腳本與解析器\n(init.rc / ServiceParser)" as Parser
+participant "init 父進程\n(Service::Start)" as InitParent
+participant "核心 VFS / Socket\n(/dev/socket/*)" as Kernel
+participant "子進程\n(Service::RunService)" as Child
+participant "Zygote 進程\n(app_process64)" as Zygote
+
+group #EFF6FF 階段一：腳本載入、解析與觸發（Steps 1–3）
+  Parser -> Parser : init.rc 展開 import init.${ro.zygote}.rc\n(init.zygote64.rc / init.zygote64_32.rc)
+  Parser -> Parser : ServiceParser::ParseSocket()\n解析 zygote 與 usap_pool_primary (0660 root:system, listen=false)
+  Parser -> InitParent : on zygote-start:\nwait_for_prop odsign.verification.done 1 -> start zygote
+end
+
+group #F0FDF4 階段二：fork() 前同步建立控制 Socket（Steps 4–5）
+  InitParent -> InitParent : ComputeContextFromExecutable("/system/bin/app_process64")
+  loop 遍歷 sockets_ (zygote, usap_pool_primary)
+    InitParent -> Kernel : SocketDescriptor::Create(scon) -> CreateSocket()\nsetsockcreatecon() + socket(PF_UNIX, SOCK_STREAM | SOCK_CLOEXEC)
+    InitParent -> Kernel : SelabelLookupFileContext() + setfscreatecon()\nbind("/dev/socket/<name>") + lchown(0, 1000) + fchmodat(0660)
+    Kernel --> InitParent : 返回 unique_fd，封裝為 Descriptor("ANDROID_SOCKET_<name>", fd)
+  end
+  InitParent -> Child : fork() 建立子進程（繼承 descriptors 內雙 Socket FD）
+end
+
+group #FEF3C7 階段三：cgroup 同步、清除 CLOEXEC 與 execv（Steps 6–7）
+  InitParent -> Kernel : createProcessGroup() + SetProcessProfiles("NormalIoPriority")
+  Child -> Child : 遍歷 descriptors 呼叫 Descriptor::Publish()\nfcntl(~FD_CLOEXEC) + setenv("ANDROID_SOCKET_zygote", fd)\n+ setenv("ANDROID_SOCKET_usap_pool_primary", fd)
+  InitParent -> Child : cgroups_activated.Write(kCgroupsActivated)
+  InitParent -> Kernel : setpgid(pid, pid) + NotifyStateChange("running")\n函式返回時 descriptors 析構關閉父進程 FD 副本
+  Child -> Child : SetProcessProfiles(ProcessCapacityHigh, MaxPerformance)\nSetProcessAttributesAndCaps(priority -20, root, readproc, reserved_disk, setexeccon)
+  Child -> Zygote : ExpandArgsAndExecv()\nexecv("/system/bin/app_process64", ["-Xzygote", "/system/bin", "~--zygote", ...])
+end
+
+group #F3E8FF 銜接 11.2 節與故障回收
+  Zygote -> Kernel : android_get_control_socket("zygote") / ("usap_pool_primary")\n讀 ANDROID_SOCKET_* + fcntl(F_GETFD) + getsockname() 核驗路徑
+  note over InitParent, Zygote
+    若 Zygote 死亡：init 於 Service::Reap() 執行 KillProcessGroup(SIGKILL)、
+    unlink(/dev/socket/*)、removeAllEmptyProcessGroups() 並觸發 onrestart 連動重啟。
+  end note
+end
+@enduml
