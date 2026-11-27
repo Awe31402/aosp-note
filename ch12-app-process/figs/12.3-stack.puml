@@ -1,0 +1,67 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam PackageBackgroundColor #F8FAFC
+skinparam PackageBorderColor #334155
+skinparam RectangleBorderColor #475569
+skinparam ArrowColor #1E293B
+skinparam ArrowFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+skinparam nodesep 25
+skinparam ranksep 28
+
+package "① 孵化完成瞬間（8 層深堆疊：由上而下＝棧頂 → 棧底）" as P1 #F8FAFC {
+  rectangle "[8 棧頂] RuntimeInit.findStaticMain()\n反射取得 ActivityThread.main -> 建 MethodAndArgsCaller" as F8 #FEE2E2
+  rectangle "[7] RuntimeInit.applicationInit()\n設 nativeSetExitWithoutCleanup(true) / targetSdk / AppCompat" as F7 #FEE2E2
+  rectangle "[6] ZygoteInit.zygoteInit()\nredirectLogStreams + commonInit + nativeZygoteInit (12.2)" as F6 #FEE2E2
+  rectangle "[5] Zygote.childMain() / handleChildProc()\n完成 SpecializeCommon() 降權沙盒化" as F5 #FFEDD5
+  rectangle "[4] Zygote.forkSimpleApps() (或 forkAndSpecialize)\n自 Zygote fork() 產出本應用程式子進程" as F4 #FFEDD5
+  rectangle "[3] ZygoteConnection.processCommand()\nZygoteCommandBuffer 讀參與安全核驗" as F3 #FFEDD5
+  rectangle "[2] ZygoteServer.runSelectLoop()\nOs.poll() 輪詢監聽並派發連線命令" as F2 #FFEDD5
+  rectangle "[1 棧底] **ZygoteInit.main()**\n進程頂層入口基座（保留）" as F1 #DBEAFE
+
+  F8 -[hidden]down- F7
+  F7 -[hidden]down- F6
+  F6 -[hidden]down- F5
+  F5 -[hidden]down- F4
+  F4 -[hidden]down- F3
+  F3 -[hidden]down- F2
+  F2 -[hidden]down- F1
+}
+
+package "② 逐層 return 退棧（清棧階段）" as P2 #FFFBEB {
+  rectangle "沿 8 → 7 → 6 → 5 → 4 → 3 → 2 逐層正常 return\n(Android 17 回傳 Runnable，取代 2.3 拋出例外清棧)" as U1 #FEF3C7
+  rectangle "7 層 Zygote 孵化棧幀與本地物件全部彈出回收\n(ZygoteCommandBuffer / ZygoteArguments / 暫存陣列)" as U2 #FEF3C7
+  rectangle "ZygoteInit.main() 執行 finally 收尾\nzygoteServer.closeServerSocket()" as U3 #FEF3C7
+  rectangle "[僅剩棧底] **ZygoteInit.main()**\n握有 caller = RuntimeInit.MethodAndArgsCaller" as U4 #DBEAFE
+
+  U1 -down-> U2
+  U2 -down-> U3
+  U3 -down-> U4
+}
+
+package "③ 跳板啟動後（4 層乾淨 App 主執行緒堆疊）" as P3 #F0FDF4 {
+  rectangle "[4 棧頂] **Looper.loop() -> loopOnce()**\n永駐消息迴圈等待／派發事件（銜接第 13 章）" as A4 #BBF7D0
+  rectangle "[3] **ActivityThread.main(args)**\n設 DeliQueue -> prepareMainLooper() -> attach(startSeq)" as A3 #DCFCE7
+  rectangle "[2] MethodAndArgsCaller.run()\nmMethod.invoke(null, new Object[] { mArgs })" as A2 #DCFCE7
+  rectangle "[1 棧底] **ZygoteInit.main()**\n僅餘極薄頂層入口基座" as A1 #DBEAFE
+
+  A4 -[hidden]down- A3
+  A3 -[hidden]down- A2
+  A2 -[hidden]down- A1
+}
+
+F8 -right-> U1 : return caller\n(Runnable)
+U4 -right-> A2 : caller.run()\n反射進入 main()
+
+note bottom of P2
+  **為何不在第 8 層直接呼叫 ActivityThread.main()？**
+  ActivityThread.main() 內的 Looper.loop() 永不返回；
+  若直接呼叫，第 2–8 層所有 Zygote 孵化棧幀與本地物件參考
+  將永久卡在主執行緒堆疊底部，既佔用棧空間又汙染堆疊追蹤。
+end note
+@enduml

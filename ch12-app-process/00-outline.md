@@ -4,7 +4,7 @@
 > **AOSP 基準**：`refs/tags/android-17.0.0_r1`
 > **Kernel 基準**：本章主體為 `system_server`（`ProcessList` / `ZygoteProcess`）、Zygote（`ZygoteServer` / `ZygoteConnection` / `ZygoteCommandBuffer` / `Zygote` JNI）與新應用程式進程（`ZygoteInit` / `RuntimeInit` / `ProcessState` / `ActivityThread`）；底層經 Unix Domain Socket（`/dev/socket/zygote`、`/dev/socket/usap_pool_primary`）傳遞啟動參數，並透過第 5 章的 Binder 驅動開啟 `/dev/binder` 與啟動執行緒池
 > **撰寫日期**：2026-11-27
-> **狀態**：✅ 全章完成（`12.1`–`12.3` 共 2,034 行、18 個 Step、40 段原始碼、1,208 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、18 處 `〔與 2.3 差異〕`、4 張 PlantUML 圖表全數編譯並目視檢查通過）
+> **狀態**：✅ 全章完成（`12.1`–`12.3` 共 2,036 行、18 個 Step、40 段原始碼、1,208 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、18 處 `〔與 2.3 差異〕`、5 張 PlantUML 圖表全數編譯並目視檢查通過）
 
 ---
 
