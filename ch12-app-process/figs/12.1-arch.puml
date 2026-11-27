@@ -1,0 +1,62 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam PackageBackgroundColor #F8FAFC
+skinparam PackageBorderColor #334155
+skinparam ComponentBackgroundColor #FFFFFF
+skinparam ComponentBorderColor #475569
+skinparam ArrowColor #1E293B
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+package "system_server（AMS / ProcessList / ZygoteProcess）" {
+  component "AMS.startProcessLocked\n轉發至 ProcessList" as AMS #EFF6FF
+  component "ProcessList.startProcessLocked\n1. 算 uid/gids/mountExternal/seInfo\n2. 設 entryPoint=ActivityThread\n3. 配 startSeq 入 mPendingStarts\n4. 投遞 mProcStartHandler (無鎖)" as PL #DBEAFE
+  component "ProcStartHandler 執行緒\nhandleProcessStart() -> startProcess()\n1. 等 predecessor.dyingPid\n2. 備 pkgDataInfoMap & useDeliQueue\n3. 分流一般 / WebView / AppZygote" as Handler #E0F2FE
+  component "Process.start -> ZygoteProcess\n1. 組 ~--runtime-args + seq= + ~--use-deliqueue=\n2. openZygoteSocketIfNeeded(abi)\n   (查 ~--query-abi-list 選主/副 Zygote)\n3. zygoteSendArgsAndGetResult()" as ZP #F0FDF4
+  component "handleProcessStartedLocked\n核銷 mPendingStarts\n登記 mPidsSelfLocked\n排程 PROC_START_TIMEOUT_MSG" as Started #DCFCE7
+}
+
+package "Unix Domain Sockets" {
+  component "/dev/socket/zygote\n(/dev/socket/zygote_secondary)\n長連線 | 回傳 5B (pid + usingWrapper)" as SockZygote #FEF3C7
+  component "/dev/socket/usap_pool_primary\n(/dev/socket/usap_pool_secondary)\n短連線 | 回傳 4B (pid)" as SockUsap #FFEDD5
+}
+
+package "Zygote 進程（三條孵化路徑）" {
+  component "ZygoteServer.runSelectLoop\nOs.poll(mZygoteSocket, peers, USAP FDs)\n-> ZygoteConnection.processCommand()" as ZS #F3E8FF
+  component "路徑 A（預設快速路徑）\nZygote.forkSimpleApps()\n-> nativeForkRepeatedly() C++ 迴圈\n   forkApp() + 直接回寫 5B\n-> 子進程 Zygote.childMain(argBuffer)" as PathA #EDE9FE
+  component "路徑 B（USAP 預孵化池）\nfillUsapPool() 預先 forkUsap()\n-> usap64 阻塞 accept()\n-> 寫 pid + writePipe 通知補池\n-> Zygote.childMain(usapSocket)" as PathB #FCE7F3
+  component "路徑 C（回退/特殊路徑）\nZygote.forkAndSpecialize()\n(~--invoke-with / ~--start-child-zygote)\n-> handleParentProc() / handleChildProc()" as PathC #FEE2E2
+}
+
+package "新應用程式子進程（特化與匯流）" {
+  component "SpecializeCommon() 原生降權\nmount 隔離 / setresuid / capset\nSELinux 轉域 / seccomp / postFork" as Spec #ECFDF5
+  component "ZygoteInit.zygoteInit()\n1. redirectLogStreams + commonInit\n2. nativeZygoteInit() -> 12.2 節\n3. applicationInit() -> 12.3 節" as ZInit #D1FAE5
+}
+
+AMS --> PL
+PL --> Handler : FLAG_PROCESS_START_ASYNC
+Handler --> ZP : Process.start()
+ZP --> SockZygote : 常規 / 回退連線
+ZP --> SockUsap : shouldAttemptUsapLaunch()=true
+ZP ..> Started : 返回 ProcessStartResult
+
+SockZygote --> ZS : POLLIN
+ZS --> PathA : multipleOK & SYSTEM_UID\n無 wrapper / 非子 Zygote
+ZS --> PathC : ~--invoke-with / ~--start-child-zygote\n或 !multipleOK
+SockUsap --> PathB : 直連待機 usap64
+
+PathA --> Spec : specializeAppProcess()
+PathB --> Spec : specializeAppProcess()
+PathC --> Spec : nativeForkAndSpecialize() 內直接執行
+Spec --> ZInit : 統一匯流（子 Zygote 走 childZygoteInit）
+
+note bottom of PathA
+  路徑 A 與路徑 B 將 fork() 與 SpecializeCommon() 解耦，
+  且原生 nativeForkRepeatedly() 避免 Zygote 在 Java 堆配置，
+  大幅壓低跨進程 Copy-on-Write 髒頁。
+end note
+@enduml

@@ -1,0 +1,53 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 300
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "ZygoteInit.main\n(頂層堆疊)" as ZMain
+participant "RuntimeInit\n(applicationInit / findStaticMain)" as RInit
+participant "MethodAndArgsCaller\n(Runnable 跳板)" as Caller
+participant "ActivityThread\n(App 主執行緒)" as AT
+participant "Looper / MessageQueue\n(主消息隊列)" as Looper
+participant "AMS / ProcessList\n(system_server)" as AMS
+
+group #EFF6FF 階段一：設定相容性、查找入口與建構跳板（Step 1）
+  ZMain -> RInit : ZygoteInit.zygoteInit() [12.2 nativeZygoteInit() 後]\n-> RuntimeInit.applicationInit(targetSdk, compatChanges, argv)
+  RInit -> RInit : nativeSetExitWithoutCleanup(true)\nVMRuntime.setTargetSdkVersion() + AppCompatCallbacks.install()\n解析 Arguments: startClass="android.app.ActivityThread",\nstartArgs=["seq=<startSeq>", "~--use-deliqueue=<bool>"]
+  RInit -> RInit : findStaticMain(startClass, startArgs, classLoader)\nClass.forName() + getMethod("main", String[].class)
+  RInit --> ZMain : 返回 new RuntimeInit.MethodAndArgsCaller(m, argv)\n[沿呼叫鏈逐層返回，清除全部 Zygote 孵化棧幀，不拋例外]
+end
+
+group #F0FDF4 階段二：清棧後執行跳板進入 ActivityThread.main（Step 2）
+  ZMain -> ZMain : finally: zygoteServer.closeServerSocket()
+  ZMain -> Caller : caller.run()
+  Caller -> AT : mMethod.invoke(null, new Object[] { mArgs })\n-> ActivityThread.main(args)
+end
+
+group #F3E8FF 階段三：每進程初始化、DeliQueue 選擇與建立主 Looper（Step 3）
+  AT -> AT : AndroidForwardingOs.install() + CloseGuard.setEnabled(false)\nEnvironment.initForCurrentUser() + TrustedCertificateStore\ninitializeMainlineModules() + setArgV0("<pre-initialized>")
+  AT -> Looper : 解析 args 提取 startSeq ("seq=") 與 useDeliQueue\nMessageQueue.setUseDeliQueue(useDeliQueue)\n[必須在 prepareMainLooper() 前鎖定 Legacy / DeliQueue]
+  AT -> Looper : Looper.prepareMainLooper() -> prepare(false)\nsThreadLocal.set(new Looper(false)) + sMainLooper = myLooper()
+end
+
+group #FFF7ED 階段四：攜帶 startSeq 向 AMS 報到並進入永駐迴圈（Step 4）
+  AT -> AT : new ActivityThread() -> thread.attach(false, startSeq)\nRuntimeInit.setApplicationObject(mAppThread.asBinder())
+  AT -> AMS : [Binder IPC] ActivityManager.getService().attachApplication(mAppThread, startSeq)
+  AMS -> AMS : attachApplicationLocked(thread, pid, callingUid, startSeq)\n查 mPidsSelfLocked(pid)；若搶先抵達則憑 startSeq 查 mPendingStarts\n並提前 handleProcessStartedLocked(..., procAttached=true)
+  AMS --> AT : [透過 12.2 節 Binder 池回呼] bindApplication() / scheduleTransaction()\n向主執行緒 ActivityThread.H 投遞啟動消息
+  AT -> AT : 註冊 BinderInternal.addGcWatcher & ViewRootImpl.addConfigCallback\nsMainThreadHandler = thread.getHandler()
+  AT -> Looper : Looper.loop() -> for (;;) { loopOnce(...); }\n[永駐事件循環，第 13 章續追 MessageQueue / Looper / Handler]
+end
+@enduml

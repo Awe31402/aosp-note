@@ -1,0 +1,58 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 295
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "App 主執行緒\n(ZygoteInit)" as ZInit
+participant "JNI / Runtime\n(AndroidRuntime / AppRuntime)" as Runtime
+participant "libbinder\n(ProcessState)" as PS
+participant "PoolThread\n(binder:<pid>_1)" as Pool
+participant "Binder 驅動\n(/dev/binder)" as Driver
+
+group #EFF6FF 階段一：Java 進入 JNI 與 gCurRuntime 虛函式分派（Step 1）
+  ZInit -> ZInit : ZygoteInit.zygoteInit()\n完成 redirectLogStreams() + commonInit()
+  note right of ZInit
+    若是 AppZygote / WebViewZygote，
+    走 childZygoteInit() 刻意跳過此流程，
+    以維持可安全 fork() 的單執行緒狀態。
+  end note
+  ZInit -> Runtime : ZygoteInit.nativeZygoteInit()\n-> com_android_internal_os_ZygoteInit_nativeZygoteInit()
+  Runtime -> Runtime : gCurRuntime->onZygoteInit()\n[gCurRuntime 由 Zygote CoW 繼承，指向 AppRuntime]
+end
+
+group #F0FDF4 階段二：子進程首度開啟 /dev/binder 與建立單例（Step 2）
+  Runtime -> PS : AppRuntime::onZygoteInit()\n-> ProcessState::self() -> init("/dev/binder", false)
+  PS -> PS : std::call_once(gProcessOnce)\n註冊 pthread_atfork(onFork, parentPostFork, childPostFork)
+  PS -> Driver : sp<ProcessState>::make("/dev/binder")\nopen("/dev/binder") + BINDER_SET_MAX_THREADS + mmap()
+  Driver --> PS : 建立該 App 專屬 binder_proc 與核心緩衝區
+  PS -> PS : verifyNotForked(gProcess->mForked) 檢查通過
+end
+
+group #F3E8FF 階段三：建立首條 Binder 主執行緒並加入迴圈（Steps 3–4）
+  Runtime -> PS : proc->startThreadPool()
+  PS -> PS : std::unique_lock<std::mutex>(mLock)\nif (!mThreadPoolStarted) mThreadPoolStarted = true
+  PS -> PS : spawnPooledThread(true)\nmakeBinderThreadName() -> "binder:<pid>_1"\nmKernelStartedThreads++
+  PS -> Pool : sp<PoolThread>::make(true)->run("binder:<pid>_1")
+  PS --> Runtime : startThreadPool() 立即返回
+  Runtime --> ZInit : nativeZygoteInit() 返回\n[主執行緒續行 12.3 節 RuntimeInit.applicationInit()]
+  Pool -> Pool : PoolThread::threadLoop()\n-> IPCThreadState::self()->joinThreadPool(true)
+  Pool -> Driver : mOut.writeInt32(BC_ENTER_LOOPER)\n迴圈 getAndExecuteCommand() [ioctl BINDER_WRITE_READ]
+  note over Pool, Driver
+    首條主 Binder 執行緒永駐核心等待請求；
+    高併發時驅動透過 BR_SPAWN_LOOPER 按需擴容輔助執行緒 (BC_REGISTER_LOOPER)。
+  end note
+end
+@enduml

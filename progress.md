@@ -5,8 +5,8 @@
 
 ## 目前狀態
 
-- **現在**：**第 5、2、4、6、3、7、8、9、10、11 章皆已全章完成**；第 11 章〈Zygote 和 System 進程的啟動過程〉共 3 節（`11.1`–`11.3`，2,229 行、23 個 Step、46 段程式碼、1,378 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、23 處 `〔與 2.3 差異〕`、4 張 PlantUML 圖表全數編譯並目視檢查通過）。
-- **下一步**：進入第 12 章〈Android 應用程式進程的啟動過程〉（`ProcessList.startProcessLocked`、`ZygoteProcess` / USAP、`ZygoteConnection.processCommand`、`ActivityThread.main`），查證 `android-17.0.0_r1` 原始碼並撰寫 `ch12-app-process/00-outline.md`（檢查點 1）。
+- **現在**：**第 5、2、4、6、3、7、8、9、10、11、12 章皆已全章完成**；第 12 章〈Android 應用程式進程的啟動過程〉共 3 節（`12.1`–`12.3`，2,034 行、18 個 Step、40 段程式碼、1,208 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、18 處 `〔與 2.3 差異〕`、4 張 PlantUML 圖表全數編譯並目視檢查通過）。
+- **下一步**：進入第 13 章〈Android 應用程式的消息處理機制〉（`Looper`、`LegacyMessageQueue` / 無鎖 `CombinedDeliMessageQueue`、`android_os_MessageQueue.cpp` / `NativeMessageQueue`、`system/core/libutils/Looper.cpp` 與 `Handler`），查證 `android-17.0.0_r1` 原始碼並撰寫 `ch13-message-queue/00-outline.md`（檢查點 1）。
 - **待決事項**：
   - [x] 確認 17 對應的 GKI kernel 分支名稱：已確認為 `kernel/common` 的 `android17-6.18`（`028363aa3cfa` / `1e0de07`）
   - [x] 確認 `ch05-binder/00-outline.md`（檢查點 1 通過）
@@ -27,7 +27,10 @@
   - [x] 撰寫並確認 `ch11-zygote-system-server/00-outline.md`（第 11 章檢查點 1）
   - [x] 確認 `ch11-zygote-system-server/11.1-zygote-init-script.md`（第 11 章檢查點 2）
   - [x] 完成第 11 章全章 `11.1`–`11.3`
-  - [ ] 撰寫並確認 `ch12-app-process/00-outline.md`（第 12 章檢查點 1）
+  - [x] 撰寫並確認 `ch12-app-process/00-outline.md`（第 12 章檢查點 1）
+  - [x] 確認 `ch12-app-process/12.1-create-app-process.md`（第 12 章檢查點 2）
+  - [x] 完成第 12 章全章 `12.1`–`12.3`
+  - [ ] 撰寫並確認 `ch13-message-queue/00-outline.md`（第 13 章檢查點 1）
 
 ## 章節進度
 
@@ -45,7 +48,7 @@
 | 8 | 第 9 章 Android 系統廣播機制 | 廣播機制（`BroadcastController` / `BroadcastQueueImpl` / `BroadcastProcessQueue`） | 重追（9.1–9.4 全章完成） | ✅ |
 | 9 | 第 10 章 Content Provider 組件的實現原理 | Content Provider（`ContentProviderHelper` / `CursorWindow` / `ContentService`） | 重追（10.1–10.4 全章完成） | ✅ |
 | 10 | 第 11 章 Zygote 和 System 進程的啟動過程 | Zygote 與 `system_server` 啟動（`init.zygote64.rc` / `ZygoteInit` / `ZygoteServer` / `SystemServer`） | 重追（11.1–11.3 全章完成） | ✅ |
-| 11 | 第 12 章 Android 應用程式進程的啟動過程 | — | 重追 | ⬜ |
+| 11 | 第 12 章 Android 應用程式進程的啟動過程 | 應用程式進程啟動（`ProcessList` / `ZygoteProcess` / `forkSimpleApps` & USAP / `ActivityThread.main`） | 重追（12.1–12.3 全章完成） | ✅ |
 | 12 | 第 13 章 Android 應用程式的消息處理機制 | — | 重追 | ⬜ |
 | 13 | 第 14 章 Android 應用程式的鍵盤消息處理機制 | Input 系統 | 重追 | ⬜ |
 | 14 | 第 15 章 Android 應用程式線程的消息循環模型 | — | 重追 | ⬜ |
@@ -97,3 +100,6 @@
 - **2026-11-27**：完成第 11 章〈Zygote 和 System 進程的啟動過程〉檢查點 1 大綱 `ch11-zygote-system-server/00-outline.md`（對照原書 p.619–638 與 `platform/system/core` `545d248`、`platform/frameworks/base` `94b4c163b`、`platform/frameworks/native` `ae266dc` 驗證 `init.zygote64.rc`、`Service::Start`/`CreateSocket`/`Descriptor::Publish`、`app_main.cpp`、`AndroidRuntime`、`ZygoteInit`/`ZygoteServer`（`Os.poll` + USAP 池）、`ForkCommon`/`SpecializeCommon`/`SigChldHandler`、`MethodAndArgsCaller` `Runnable` 跳板與 `SystemServer`/`SystemServiceManager` 四階段 + Boot Phases，規劃為 `11.1`–`11.3` 三節並附完整 2.3 → 17 對照表），等待確認。
 - **2026-11-27**：第 11 章檢查點 1 通過；完成檢查點 2 第一節 `ch11-zygote-system-server/11.1-zygote-init-script.md`（555 行、7 個 Step、13 段原始碼、311 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、7 處 `〔與 2.3 差異〕`，附 PlantUML 架構圖 `figs/11.1-arch.png` 與時序圖 `figs/11.1-seq.png` 並目視檢查通過），等待確認深度與篇幅。
 - **2026-11-27**：第 11 章檢查點 2 通過；完成第 11 章剩餘全部小節 `11.2-zygote-startup.md`、`11.3-system-server-startup.md`；第 11 章全章 3 節（2,229 行、23 個 Step、46 段程式碼、1,378 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、23 處 `〔與 2.3 差異〕`、4 張 PlantUML 圖表全數編譯並目視檢查通過），狀態推進至 ✅ 全章完成。
+- **2026-11-27**：完成第 12 章〈Android 應用程式進程的啟動過程〉檢查點 1 大綱 `ch12-app-process/00-outline.md`（對照原書 p.638–652 與 `platform/frameworks/base` `94b4c163b`、`platform/frameworks/native` `ae266dc` 驗證 `ProcessList` 非同步啟動與 `startSeq`/`mPendingStarts`、`ZygoteProcess` 雙 ABI 與 USAP、`ZygoteConnection.processCommand` 預設 `forkSimpleApps`（`nativeForkRepeatedly`）與 USAP / `forkAndSpecialize` 三路徑、`ZygoteInit.nativeZygoteInit` → `AppRuntime::onZygoteInit` → `ProcessState::startThreadPool`、`RuntimeInit.MethodAndArgsCaller` `Runnable` 跳板與 `ActivityThread.main` 的 `seq=` / `--use-deliqueue=` 處理，規劃為 `12.1`–`12.3` 三節並附完整 2.3 → 17 對照表），等待確認。
+- **2026-11-27**：第 12 章檢查點 1 通過；完成檢查點 2 第一節 `ch12-app-process/12.1-create-app-process.md`（1,266 行、10 個 Step、22 段原始碼、814 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、10 處 `〔與 2.3 差異〕`，附 PlantUML 架構圖 `figs/12.1-arch.png` 與時序圖 `figs/12.1-seq.png` 並目視檢查通過），等待確認深度與篇幅。
+- **2026-11-27**：第 12 章檢查點 2 通過；完成第 12 章剩餘全部小節 `12.2-start-binder-thread-pool.md`、`12.3-create-message-loop.md`；第 12 章全章 3 節（2,034 行、18 個 Step、40 段程式碼、1,208 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、18 處 `〔與 2.3 差異〕`、4 張 PlantUML 圖表全數編譯並目視檢查通過），狀態推進至 ✅ 全章完成。

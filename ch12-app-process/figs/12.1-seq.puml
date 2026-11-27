@@ -1,0 +1,66 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 300
+skinparam ParticipantPadding 8
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "AMS / ProcessList\n(system_server 鎖內)" as PL
+participant "ProcStartHandler\n(system_server 無鎖)" as Handler
+participant "Process / ZygoteProcess\n(Socket 客戶端)" as ZP
+participant "ZygoteServer /\nZygoteConnection" as ZC
+participant "Zygote JNI\n(CommandBuffer / Fork)" as ZJNI
+participant "新應用程式進程\n(Child / USAP)" as Child
+
+group #EFF6FF 階段一：AMS 參數準備與非同步投遞（Steps 1–2）
+  PL -> PL : AMS.startProcessLocked()\n-> ProcessList.startProcessLocked()\n算 uid/gids/mountExternal/runtimeFlags/seInfo\n指定 entryPoint="android.app.ActivityThread"
+  PL -> PL : 分配 startSeq = ++mProcStartSeqCounter\n登記 mPendingStarts.put(startSeq, app)
+  PL -> Handler : mProcStartHandler.post(handleProcessStart)\n[立即釋放 AMS 全域鎖]
+  Handler -> Handler : 檢查 predecessor.getDyingPid()\n備 pkgDataInfoMap 與 useDeliQueue\n分流一般 Zygote / WebView / AppZygote
+end
+
+group #F0FDF4 階段二：ZygoteProcess 封裝與雙通道傳輸（Steps 3–4）
+  Handler -> ZP : Process.start(..., "seq=<startSeq>")\n-> ZygoteProcess.start() -> startViaZygote()
+  ZP -> ZP : 組裝 ~--runtime-args, ~--setuid/gid, ~--seinfo,\n"android.app.ActivityThread", "seq=...", "~--use-deliqueue=..."
+  ZP -> ZP : synchronized(mLock):\nopenZygoteSocketIfNeeded(abi)\n[首連發 ~--query-abi-list 匹配主/副 Zygote]
+  alt 命中 shouldAttemptUsapLaunch()（路徑 B：USAP 池）
+    ZP -> Child : attemptUsapSendArgsAndGetResult()\n直連 /dev/socket/usap_pool_primary 送 argc+args
+    Child -> Child : usap64 於 childMain() accept() 讀參\n寫回 4B pid、關 usapPoolSocket、寫 writePipe 通知補池
+    Child --> ZP : 返回 4B pid (usingWrapper=false)
+  else 常規 Zygote 連線（路徑 A 預設 / 路徑 C 回退）
+    ZP -> ZC : attemptZygoteSendArgsAndGetResult()\n寫入 /dev/socket/zygote (argc + "\\n" + args)
+  end
+end
+
+group #F3E8FF 階段三：Zygote 孵化與特化（Steps 5–9）
+  ZC -> ZC : ZygoteServer.runSelectLoop() Os.poll() 喚醒\n計算 multipleForksOK -> processCommand(this, multipleOK)\nZygoteCommandBuffer 讀參 + SO_PEERCRED 安全檢查
+  alt 路徑 A（預設快速路徑：multipleOK & SYSTEM_UID & 無 wrapper/子 Zygote）
+    ZC -> ZJNI : ZygoteHooks.preFork()\n-> Zygote.forkSimpleApps() -> nativeForkRepeatedly()
+    ZJNI -> Child : zygote::forkApp() -> ForkCommon()\n[關閉父端 Socket FD，子進程攜 n_buffer 返回 JNI_TRUE]
+    ZJNI --> ZP : 父進程直接回寫 5B (big-endian pid + 0)\n並續留 C++ poll() 等下一筆簡單命令
+    Child -> Child : Zygote.childMain(argBuffer, null, null)\n解析 ZygoteArguments -> specializeAppProcess()\n-> nativeSpecializeAppProcess() -> SpecializeCommon()\n-> setAppProcessName()
+  else 路徑 C（回退路徑：~--invoke-with / ~--start-child-zygote / !multipleOK）
+    ZC -> ZJNI : Zygote.forkAndSpecialize() -> nativeForkAndSpecialize()
+    ZJNI -> Child : ForkCommon() + 子進程直接 SpecializeCommon()
+    ZC -> ZP : 父進程 handleParentProc() 回寫 pid + usingWrapper\n[若用 wrapper 則先 poll pipe 核驗 innerPid]
+    Child -> Child : handleChildProc()\n[分流 WrapperInit / childZygoteInit / zygoteInit]
+  end
+end
+
+group #FFF7ED 階段四：兩端匯流與收尾（Steps 9–10）
+  ZP --> Handler : 返回 ProcessStartResult(pid, usingWrapper)
+  Handler -> PL : synchronized(mService):\nhandleProcessStartedLocked(app, startResult, startSeq)\n核銷 mPendingStarts、登記 mPidsSelfLocked\n排程 PROC_START_TIMEOUT_MSG
+  Child -> Child : ZygoteInit.zygoteInit()\n1. redirectLogStreams() + commonInit()\n2. nativeZygoteInit() -> 啟動 Binder 池 (12.2 節)\n3. applicationInit() -> ActivityThread.main (12.3 節)
+end
+@enduml
