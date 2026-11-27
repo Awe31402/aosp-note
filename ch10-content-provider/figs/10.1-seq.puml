@@ -1,0 +1,48 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 285
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "消費端 App\n(Article / ContentResolver)" as Client
+participant "AMS / ContentProviderHelper\n(system_server)" as AMS
+participant "提供端 App\n(ArticlesProvider)" as Provider
+participant "ContentService\n(system_server)" as CS
+
+group #EFF6FF 情景一：按需冷啟動、發布與連線計數（10.2 節）
+  Client -> AMS : acquireUnstableProvider() -> ActivityThread.acquireProvider()\n-> IActivityManager.getContentProvider(..., stable=false)
+  AMS -> AMS : getContentProviderImpl() 查無進程\n入列 mLaunchingProviders + startProcessLocked()\n客戶端執行緒於 synchronized(cpr) 呼叫 cpr.wait() 阻塞
+  AMS -> Provider : 新進程 attachApplication -> bindApplication(ProviderInfoList)
+  Provider -> Provider : handleBindApplication -> installContentProviders()\n-> instantiateProvider() -> attachInfo() -> ArticlesProvider.onCreate()
+  Provider -> AMS : IActivityManager.publishContentProviders(holders)
+  AMS -> AMS : 填回 cpr.mProvider、移出 mLaunchingProviders\n-> cpr.notifyAll() 喚醒等待中的客戶端
+  AMS --> Client : 返回 ContentProviderHolder (provider + connection 權杖)
+  Client -> Client : installProvider() 寫入本地 mProviderMap 與 mProviderRefCountMap
+end
+
+group #F0FDF4 情景二：跨進程 CursorWindow 資料共享（10.3 節）
+  Client -> Provider : ContentResolver.query() [Unstable 優先；DeadObjectException 改 Stable 重試]\n-> ContentProviderProxy.query() [QUERY_TRANSACTION + AttributionSource]
+  Provider -> Provider : Transport.query() -> ArticlesProvider.query() -> SQLiteCursor\n-> CursorToBulkCursorAdaptor.getBulkCursorDescriptor()\n-> SQLiteQuery.fillWindow() 寫入原生 CursorWindow
+  Provider --> Client : BulkCursorDescriptor [含 IBulkCursor + CursorWindow]\n(<=16 KiB 緊縮直寫 Parcel；>16 KiB maybeInflate() 轉 ashmem/memfd 唯讀 fd)
+  Client -> Client : CursorWindow::createFromParcel() [inline malloc 或 mmap PROT_READ]\n-> BulkCursorToCursorAdaptor.initialize() [翻頁時呼 IBulkCursor.getWindow()]
+end
+
+group #FEF3C7 情景三：ContentService 資料更新通知（10.4 節）
+  Client -> CS : registerContentObserver(uri, desc, observer)\n-> checkContentProviderAccess() + ObserverNode.addObserverLocked()
+  Provider -> CS : ArticlesProvider.insert() -> notifyChange(Uri[], flags)\n-> ObserverNode.collectObserversLocked() + ObserverCollector 彙整
+  CS -> Client : oneway IContentObserver.onChangeEtc(selfChange, uris[], flags, userId)
+  Client -> Client : ContentObserver.dispatchChange() [Handler / ExecutorContentObserver]\n-> ContentObserver.onChange(selfChange, uris, flags)
+end
+@enduml

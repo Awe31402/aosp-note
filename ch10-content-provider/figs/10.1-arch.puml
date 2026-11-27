@@ -1,0 +1,116 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam ClassBackgroundColor #F8FAFC
+skinparam ClassBorderColor #334155
+skinparam ClassHeaderBackgroundColor #E2E8F0
+skinparam ArrowColor #1E293B
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+class ActivityManagerService <<server/am>> {
+  +mCpHelper : ContentProviderHelper
+  +getContentProvider(...) : ContentProviderHolder
+  +publishContentProviders(...) : void
+  +refContentProvider(...) : boolean
+  +removeContentProvider(...) : void
+  +unstableProviderDied(conn) : void
+}
+
+class ContentProviderHelper <<server/am>> {
+  -mLaunchingProviders : ArrayList<ContentProviderRecord>
+  -mProviderMap : ProviderMap
+  +getContentProvider(...) : ContentProviderHolder
+  -getContentProviderImpl(...) : ContentProviderHolder
+  +publishContentProviders(...) : void
+  +removeDyingProviderLocked(...) : boolean
+}
+
+class ProviderMap <<server/am>> {
+  -mSingletonByName : HashMap<String, ContentProviderRecord>
+  -mSingletonByClass : HashMap<ComponentName, ContentProviderRecord>
+  -mProvidersByNamePerUser : SparseArray<HashMap>
+  -mProvidersByClassPerUser : SparseArray<HashMap>
+  +getProviderByName(name, userId) : ContentProviderRecord
+}
+
+class ContentProviderRecord <<server/am>> {
+  +mProviderInfo : ProviderInfo
+  +mProvider : IContentProvider
+  +mProc : ProcessRecord
+  +mLaunchingApp : ProcessRecord
+  +mSingleton : boolean
+  +mNoReleaseNeeded : boolean
+  +mConnections : ArrayList<ContentProviderConnection>
+  +newHolder(conn, local) : ContentProviderHolder
+}
+
+class ContentProviderConnection <<extends Binder>> {
+  +provider : ContentProviderRecord
+  +client : ProcessRecord
+  -mStableCount : int
+  -mUnstableCount : int
+  +waiting / dead : boolean
+  +incrementCount(stable) : int
+  +decrementCount(stable) : int
+}
+
+class ProcessProviderRecord <<ProcessRecord.mProviders>> {
+  +mApp : ProcessRecord
+  +getProvider(name) : ContentProviderRecord
+  +getProviderConnectionAt(i) : ContentProviderConnection
+  +onCleanupApplicationRecordLocked() : boolean
+}
+
+class ContentProviderHolder <<Parcelable>> {
+  +info : ProviderInfo
+  +provider : IContentProvider
+  +connection : IBinder
+  +noReleaseNeeded : boolean
+  +noReleaseNeededIfUnstable : boolean
+  +mLocal : boolean
+}
+
+class ContentService <<server/content>> {
+  -mRootNode : ObserverNode
+  +registerContentObserver(...) : void
+  +notifyChange(uris[], ...) : void
+}
+
+class CursorWindow <<libandroidfw C++>> {
+  -mData : void*
+  -mSize / mInflatedSize : size_t
+  -mAshmemFd : int
+  -mReadOnly : bool
+  +maybeInflate() : status_t
+  +writeToParcel(parcel) : status_t
+  +createFromParcel(parcel) : status_t
+}
+
+ActivityManagerService *--> ContentProviderHelper : mCpHelper
+ContentProviderHelper *--> ProviderMap : mProviderMap
+ContentProviderHelper o--> ContentProviderRecord : mLaunchingProviders
+ProviderMap o--> ContentProviderRecord : singleton /\nper-user maps
+ContentProviderRecord *--> ContentProviderConnection : mConnections
+ContentProviderRecord ..> ContentProviderHolder : newHolder()
+ProcessProviderRecord o--> ContentProviderRecord : Published Providers
+ProcessProviderRecord o--> ContentProviderConnection : Connected Providers
+ContentProviderHolder o--> CursorWindow : 查詢時經 BulkCursorDescriptor\n傳輸 CursorWindow
+
+note right of ContentProviderConnection
+  Stable / Unstable 雙計數：
+  mStableCount == 0 且僅持 Unstable 時，
+  Provider 崩潰不連坐殺死客戶端，
+  客戶端捕獲 DeadObjectException 重試。
+end note
+
+note bottom of CursorWindow
+  Android 17 雙模態儲存：
+  <= 16 KiB：inline calloc 緊縮直寫 Parcel
+  > 16 KiB：maybeInflate() 轉 ashmem/memfd
+  並以 PROT_READ 唯讀 fd 共享給客戶端。
+end note
+@enduml

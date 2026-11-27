@@ -1,0 +1,54 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 285
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "消費端 App\n(ContentResolver /\nBulkCursorAdaptor)" as Client
+participant "提供端 App\n(ContentProviderNative /\nCursorToBulkCursor)" as Provider
+participant "SQLite & Native\nCursorWindow\n(libandroidfw)" as Native
+
+group #EFF6FF 1. Unstable 查詢發起與權限檢核
+  Client -> Client : ContentResolver.query() -> acquireUnstableProvider(uri)\n[若遇 DeadObjectException -> unstableProviderDied() + 改 acquireProvider() 重試]
+  Client -> Client : ContentProviderProxy.query()\n建 BulkCursorToCursorAdaptor (不預建 CursorWindow)
+  Client -> Provider : Binder QUERY_TRANSACTION\n(AttributionSource, uri, projection, queryArgs, IContentObserver, signal)
+  Provider -> Provider : ContentProvider.Transport.query() -> enforceReadPermission()\n-> ArticlesProvider.query() -> 返回延遲執行的 SQLiteCursor
+end
+
+group #F0FDF4 2. Provider 側填充首頁與 16 KiB 內聯 / 延遲膨脹
+  Provider -> Provider : new CursorToBulkCursorAdaptor()\n-> getBulkCursorDescriptor() 呼 mCursor.getCount()
+  Provider -> Native : SQLiteCursor.fillWindow(0) -> CursorWindow::create()\n配置 kInlineSize = 16 KiB calloc (mAshmemFd == -1)
+  Native -> Native : SQLiteQuery.fillWindow() 逐列寫入\n(變長資料從 0 向上長；16B FieldSlot 從尾端向下長)
+  opt 結果集超過 16 KiB
+    Native -> Native : CursorWindow::maybeInflate()：\nashmem_create_region(mInflatedSize) [API 37 走 memfd]\n-> MappedFile(RW) -> ashmem_set_prot_region(PROT_READ)\n-> 搬移頭尾資料並 free(16 KiB inline)
+  end
+end
+
+group #FEF3C7 3. BulkCursorDescriptor 雙模態回傳與翻頁
+  Provider -> Native : BulkCursorDescriptor.writeToParcel() -> CursorWindow::writeToParcel()
+  alt 小結果集 (mAshmemFd == -1)
+    Native --> Client : 緊縮剔除中間空白 (sizeInUse) 直寫 Binder Parcel（零 fd / 零 mmap）
+    Client -> Client : CursorWindow::createFromParcel() -> malloc() 複製讀出 (mReadOnly=true)
+  else 大結果集 (mAshmemFd != -1)
+    Native --> Client : parcel->writeDupFileDescriptor(mAshmemFd)（僅傳唯讀 fd）
+    Client -> Client : CursorWindow::createFromParcel() -> F_DUPFD_CLOEXEC\n+ MappedFile::Create(..., PROT_READ) 零拷貝唯讀映射
+  end
+  Client -> Client : BulkCursorToCursorAdaptor.initialize(d)\n包裝為 CursorWrapperInner (持 Stable 直到 close() 釋放)
+  opt 讀取列號超出當前視窗範圍（跨頁）
+    Client -> Provider : BulkCursorToCursorAdaptor.onMove() -> IBulkCursor.getWindow(pos)
+    Provider --> Client : 重新 fillWindow(pos) 並回傳新一頁唯讀 CursorWindow
+  end
+end
+@enduml

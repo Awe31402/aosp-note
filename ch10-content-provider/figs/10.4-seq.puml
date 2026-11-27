@@ -1,0 +1,50 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 285
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "消費端 App\n(Article / ContentObserver)" as Client
+participant "ContentService\n(ObserverNode /\nObserverCollector)" as CS
+participant "提供端 App\n(ArticlesProvider)" as Provider
+
+group #EFF6FF 1. 註冊內容觀察者：registerContentObserver
+  Client -> Client : ContentResolver.registerContentObserver(uri, true, observer)\n剝離 userId + observer.getContentObserver() 建 Transport (IContentObserver.Stub)
+  Client -> CS : IContentService.registerContentObserver(uri, true, Transport, userHandle, sdkVer)
+  CS -> CS : handleIncomingUser(FLAG_GRANT_READ_URI_PERMISSION)\n+ ActivityManagerInternal.checkContentProviderAccess() [API 26+ 越權拋 SecurityException]
+  CS -> CS : synchronized(mRootNode) -> mRootNode.addObserverLocked()\n依 authority 與 path segments 建 URI 前綴樹\n建立 ObserverEntry 並透過 sObserverDeathDispatcher 登記死亡清理
+end
+
+group #F0FDF4 2. 批次發送更新通知：notifyChange
+  Provider -> Provider : ArticlesProvider.insert() 寫入新資料\n-> ContentResolver.notifyChange(uris, observer, flags)\n按 userId 分群打包為 Uri[] 陣列
+  Provider -> CS : IContentService.notifyChange(uris[], observer, self, flags, userId, sdkVer, pkg)
+  CS -> CS : 逐 URI 驗證 checkContentProviderAccess()
+  CS -> CS : synchronized(mRootNode) -> mRootNode.collectObserversLocked()\n① 祖先節點：僅收集 notifyForDescendants==true\n② 葉節點＋全體子樹節點：依 userHandle/selfChange 收集\n匯入 ObserverCollector 按 (observer, uid, self, flags, userId) 合併 Uri[]
+  CS -> CS : ObserverCollector.dispatch()：\n查詢 getUidProcessState(uid)
+  alt 前景重要進程 (<= IMPORTANT_FOREGROUND) 或 NOTIFY_NO_DELAY
+    CS -> Client : 立即送出 oneway IContentObserver.onChangeEtc(self, uris[], flags, userId)
+  else 背景進程（防驚群 Stampeding）
+    CS -> Client : BackgroundThread.postDelayed(10s)\n-> oneway IContentObserver.onChangeEtc(self, uris[], flags, userId)
+  end
+  opt 帶 NOTIFY_SYNC_TO_NETWORK
+    CS -> CS : SyncManager.scheduleLocalSync() + invalidateCacheLocked()
+  end
+end
+
+group #FEF3C7 3. 消費端接收並切執行緒回調
+  Client -> Client : Transport.onChangeEtc() -> ContentObserver.dispatchChange()\n[ExecutorContentObserver -> mExecutor.execute()\n / Handler -> mHandler.post() / null -> 直接執行]
+  Client -> Client : ArticleObserver.onChange(selfChange, uris, flags, userId)\n向下相容轉呼 onChange(selfChange, uri) 刷新 UI
+end
+@enduml

@@ -1,0 +1,48 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 285
+skinparam ParticipantPadding 10
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "消費端 App\n(Article / ActivityThread)" as Client
+participant "ContentProviderHelper\n(system_server)" as Helper
+participant "Zygote / AMS\n(進程孵化)" as Zygote
+participant "提供端 App\n(ArticlesProvider)" as Provider
+
+group #EFF6FF 1. 客戶端請求並進入客戶端側等待（不阻塞 system_server）
+  Client -> Client : ApplicationContentResolver.acquireUnstableProvider()\n-> ActivityThread.acquireProvider() [mProviderMap 未命中]
+  Client -> Helper : IActivityManager.getContentProvider(caller, pkg, auth, userId, stable)
+  Helper -> Helper : getContentProviderImpl()：\nresolveContentProvider + 權限檢核 -> 建 ContentProviderRecord
+  Helper -> Zygote : 查無進程 -> startProcessLocked(..., HOSTING_TYPE_CONTENT_PROVIDER)
+  Helper -> Helper : mLaunchingProviders.add(cpr) + putProviderByClass/Name\n+ incProviderCountLocked() [conn.waiting = true]\n+ 排入 WAIT_FOR_CONTENT_PROVIDER_TIMEOUT_MSG (20s)
+  Helper --> Client : 立即回傳空殼 ContentProviderHolder (provider == null)\n[釋放 system_server Binder 執行緒]
+  Client -> Client : 見 holder.provider == null && !mLocal\n-> synchronized(key.mLock) { key.mLock.wait(20s) }
+end
+
+group #F0FDF4 2. Provider 進程孵化、安裝與發布喚醒
+  Zygote -> Provider : fork -> ActivityThread.main()
+  Provider -> Helper : attachApplication() -> generateApplicationProvidersLocked()\n[排入 CONTENT_PROVIDER_PUBLISH_TIMEOUT_MSG]
+  Helper -> Provider : IApplicationThread.bindApplication(..., ProviderInfoList)
+  Provider -> Provider : handleBindApplication() [早於 Application.onCreate()]\n-> installContentProviders() -> installProvider()\n-> AppComponentFactory.instantiateProvider() -> attachInfo()\n-> ArticlesProvider.onCreate()
+  Provider -> Helper : IActivityManager.publishContentProviders(appThread, results)
+  Helper -> Helper : 填回 dst.mProvider、移出 mLaunchingProviders、取消逾時\n-> dst.notifyAll() + updateOomAdjLocked()
+  Helper -> Client : dst.onProviderPublishStatusLocked(true)\n-> IApplicationThread.notifyContentProviderPublishStatus(holder) [oneway]
+end
+
+group #FEF3C7 3. 客戶端甦醒與本地雙計數登記
+  Client -> Client : Binder 執行緒寫入 key.mHolder = holder -> key.mLock.notifyAll()
+  Client -> Client : acquireProvider() 甦醒 -> installProvider(c, holder, ...)\n寫入 mProviderMap 與 mProviderRefCountMap (stable / unstable)\n返回 ContentProviderProxy 給 ContentResolver
+end
+@enduml
