@@ -1,0 +1,61 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam PackageBackgroundColor #F8FAFC
+skinparam PackageBorderColor #334155
+skinparam ComponentBackgroundColor #FFFFFF
+skinparam ComponentBorderColor #475569
+skinparam ArrowColor #1E293B
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+package "Linux 核心層" {
+  component "evdev 驅動\n/dev/input/event*\n(struct input_event)" as Evdev #FEE2E2
+  component "SOCK_SEQPACKET\nUnix Domain SocketPair\n(32 KiB 雙向緩衝區)" as Sock #FFEDD5
+}
+
+package "system_server 進程" {
+  component "WindowManagerService\n+ InputMonitor\n(WindowState / InputWindowHandle)" as WMS #EFF6FF
+  component "InputManagerService\n+ NativeInputManagerService.NativeImpl\n(Java 系統服務)" as IMS #DBEAFE
+  component "NativeInputManager (JNI)\n+ InputManager (BnInputFlinger)\n註冊「inputflinger」服務" as NIM #E0E7FF
+  component "EventHub + InputReader\n(InputThread)\nepoll_create1 / inotify / pipe2\nKeyboardInputMapper" as Reader #DCFCE7
+  component "7 階段 InputListener 管線\nUnwantedInteractionBlocker\n-> PointerChoreographer\n-> InputProcessor\n-> MetricsCollector\n-> InputFilter (IInputFlingerRust)\n-> InteractionReporter" as Pipeline #F0FDF4
+  component "InputDispatcher (InputThread)\n+ FocusResolver\n+ ConnectionManager / AnrTracker\n+ InputPublisher / Looper" as Dispatcher #F3E8FF
+}
+
+package "surfaceflinger 進程" {
+  component "SurfaceFlinger\n+ WindowInfosListenerInvoker\n+ BackgroundExecutor" as SF #FEF3C7
+}
+
+package "應用程式進程 (主執行緒)" {
+  component "NativeInputEventReceiver (JNI)\n: LooperCallback, MessageHandler\n+ InputConsumer\n+ BlockingQueue<OutboundEvent>" as NIER #F3E8FF
+  component "主執行緒 libutils/Looper\n(第 13 章 eventfd + epoll)" as AppLooper #FEF3C7
+  component "ViewRootImpl\n+ WindowInputEventReceiver\n+ 7 階段 InputStage 管線\n(PreIme -> IME -> PostIme -> Synthetic)" as VRI #DBEAFE
+  component "DecorView -> Activity\n-> PhoneWindow -> View 樹" as Views #EFF6FF
+}
+
+Evdev --> Reader : epoll_wait + read()\nRawEvent
+Reader --> Pipeline : mNextListener.notify(NotifyKeyArgs)
+Pipeline --> Dispatcher : InputDispatcher::notifyKey()
+
+WMS --> IMS : createInputChannel() /\nremoveInputChannel()
+IMS --> NIM : JNI (mPtr)
+NIM --> Dispatcher : InputManager::getDispatcher()
+
+WMS --> SF : SurfaceControl.Transaction\nsetInputWindowInfo() /\nsetFocusedWindow()
+SF --> Dispatcher : WindowInfosListener::onWindowInfosChanged()
+SF --> NIM : IInputFlinger::setFocusedWindow()\n-> FocusResolver
+
+Dispatcher --> Sock : InputPublisher::publishKeyEvent()\nInputMessage::KEY (+HMAC)
+Sock --> AppLooper : EPOLLIN 喚醒主執行緒
+AppLooper --> NIER : handleEvent() -> consumeEvents()
+NIER --> VRI : dispatchInputEvent() -> onInputEvent()
+VRI --> Views : ViewPostImeInputStage\ndispatchKeyEvent()
+Views --> VRI : 處理結果 (handled)
+VRI --> NIER : finishInputEvent(seq, handled)
+NIER --> Sock : InputConsumer::sendFinishedSignal()\nInputMessage::FINISHED
+Sock --> Dispatcher : handleReceiveCallback()\nfinishDispatchCycleLocked()
+@enduml

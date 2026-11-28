@@ -1,0 +1,67 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 6
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "SystemServer" as SS
+participant "InputManagerService\n+ NativeImpl" as IMS
+participant "NativeInputManager\n(JNI)" as NIM
+participant "InputManager\n(inputflinger)" as IM
+participant "InputDispatcher\n(InputThread)" as Disp
+participant "InputReader\n+ EventHub" as Reader
+participant "SurfaceFlinger" as SF
+
+group #EFF6FF 階段一：建立 InputManagerService 與 7 階段管線（Steps 1–4）
+  SS -> IMS : startService(InputManagerService.Lifecycle)\n-> new InputManagerService(context)
+  IMS -> IMS : loadStaticInputPortAssociations()\nnew NativeImpl(service, DisplayThread.looper.getQueue())
+  IMS -> NIM : nativeInit() -> std::call_once\nnew NativeInputManager()
+  NIM -> IM : new InputManager(policies..., vm, createInteractionReporter)
+  IM -> IM : createInputFlingerRust() [cxxbridge Rust FFI]
+  IM -> Disp : new InputDispatcher(dispatcherPolicy, tracingBackend, vm)
+  Disp -> SF : SurfaceComposerClient::addWindowInfosListener(mWindowInfoListener)
+  SF --> Disp : 返回初始 WindowInfosUpdate -> onWindowInfosChanged()
+  IM -> IM : 由尾到頭建立 7 階段 TracedInputListener\n(InteractionReporter -> InputFilter -> Metrics -> Processor -> Choreographer -> Blocker)
+  IM -> Reader : new InputReader(new EventHub(), ...)\nEventHub: epoll_create1 / inotify_init1 / pipe2\nmNeedToScanDevices = true
+  NIM -> NIM : defaultServiceManager()->addService("inputflinger", im)
+  NIM --> IMS : 返回 64-bit mPtr
+  IMS -> IMS : Lifecycle.onStart() -> publishBinderService("input")
+end
+
+group #F0FDF4 階段二：綁定 WMS 回呼並啟動 InputManager（Step 5）
+  SS -> SS : WindowManagerService.main(context, inputManager, ...)
+  SS -> IMS : setWindowManagerCallbacks(wm.getInputManagerCallback())
+  SS -> IMS : inputManager.start()
+  IMS -> NIM : mNative.start() -> nativeStart()
+  NIM -> IM : InputManager::start()
+  IMS -> IMS : Watchdog.getInstance().addMonitor(this)
+end
+
+group #F3E8FF 階段三：啟動 InputDispatcher 執行緒（Step 6）
+  IM -> Disp : InputDispatcher::start()
+  Disp -> Disp : new InputThread("InputDispatcher", dispatchOnce, wake)\nSetTaskProfiles("InputPolicy") + JvmAttacher
+  Disp -> Disp : dispatchOnce() -> dispatchOnceInnerLocked()\nprocessPreAnrsLocked() / processAnrsLocked()
+  Disp -> Disp : mLooper->pollOnce(timeoutMillis) [進入 epoll_wait 休眠]
+end
+
+group #FFF7ED 階段四：啟動 InputReader 並掃描 /dev/input（Steps 7–8）
+  IM -> Reader : InputReader::start()
+  Reader -> Reader : new InputThread("InputReader", loopOnce, wake)\nSetTaskProfiles("InputPolicy") + JvmAttacher
+  Reader -> Reader : loopOnce() -> EventHub::getEvents(timeoutMillis)
+  Reader -> Reader : handleDeviceChangesLocked() -> scanDevicesLocked()\nscanDirLocked("/dev/input") -> openDeviceLocked()
+  Reader -> Reader : registerDeviceForEpollLocked(EPOLLIN | EPOLLWAKEUP)\n產出 DEVICE_ADDED 事件建立 KeyboardInputMapper
+  Reader -> Reader : 下一輪無事件 -> epoll_wait(mEpollFd, ...) 休眠待命
+end
+@enduml

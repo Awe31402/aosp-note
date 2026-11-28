@@ -1,0 +1,49 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 320
+skinparam ParticipantPadding 6
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "ATMS\nActivityRecord" as AR
+participant "應用進程\nActivityThread /\nWindowManagerGlobal" as AT
+participant "應用進程\nViewRootImpl" as VRI
+participant "WMS / Session\n/ WindowState" as WMS
+participant "InputManagerService\n+ InputDispatcher" as Disp
+participant "應用進程\nNativeInputEventReceiver\n+ Looper" as NIER
+
+group #EFF6FF 階段一：銷毀應用程式視窗（Steps 1–3）
+  AR -> AT : destroyImmediately() -> DestroyActivityItem\n(ClientLifecycleManager.scheduleTransactionItem)
+  AT -> AT : handleDestroyActivity() -> performDestroyActivity()\nwm.removeViewImmediate(v) -> WindowManagerGlobal.removeView()
+  AT -> VRI : removeViewLocked() -> root.die(true) -> doDie()
+  VRI -> VRI : dispatchDetachedFromWindow()\nmFirstInputStage.onDetachedFromWindow()\ndestroyHardwareRenderer() / destroySurface()
+end
+
+group #F0FDF4 階段二：先註銷 Server 端 InputChannel（Steps 4–5，與 2.3 順序反轉）
+  VRI -> WMS : mWindowSession.remove(mWindow.asBinder()) [同步 Binder]
+  WMS -> WMS : Session.remove() -> WMS.removeClientToken()\n-> WindowState.removeIfPossible() -> disposeInputChannel()
+  WMS -> Disp : mInputManager.removeInputChannel(mInputChannelToken)\n-> nativeRemoveInputChannel() -> InputDispatcher::removeInputChannel()
+  Disp -> Disp : removeInputChannelLocked(connection, notify=false)\nabortBrokenDispatchCycleLocked() [排空 outbound/wait 佇列]\nmAnrTracker.eraseToken(token)
+  Disp -> Disp : mConnectionManager.removeConnection()\nmConnectionsByToken.erase(token)\nmLooper->removeFd(serverFd); status = ZOMBIE\nmLooper->wake()
+  Disp --> WMS : 返回 OK (Server 端 socket 關閉)
+  WMS -> WMS : 清除 mInputToWindowMap / mKeyInterceptionInfoForToken\nmInputWindowHandle.setToken(null)
+  WMS --> VRI : mWindowSession.remove() 返回
+end
+
+group #F3E8FF 階段三：後註銷 Client 端 InputChannel（Step 6）
+  VRI -> NIER : mInputEventReceiver.dispose()\nWindowInputEventReceiver.dispose() [移除 FrameMetricsObserver]\n-> InputEventReceiver.dispose(false) -> nativeDispose(mReceiverPtr)
+  NIER -> NIER : NativeInputEventReceiver::dispose()\n1. processOutboundEvents() [盡力沖刷未送回執]\n2. setFdEvents(0) -> mMessageQueue->getLooper()->removeFd(clientFd)\n3. mInputConsumer.reset() [關閉 Client socket unique_fd]\n4. removeMessages(this) + decStrong()
+  NIER --> VRI : 返回，Client 端與主執行緒 Looper 清理完成
+end
+@enduml

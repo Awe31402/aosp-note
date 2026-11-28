@@ -1,0 +1,58 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 270
+skinparam ParticipantPadding 5
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "EventHub +\nInputReader" as Reader
+participant "7 階段\nInputListener" as Pipe
+participant "InputDispatcher\n+ InputPublisher" as Disp
+participant "SOCK_SEQPACKET\nSocketPair" as Sock
+participant "NativeInputEventReceiver\n+ InputConsumer" as NIER
+participant "ViewRootImpl\n(InputStage 管線)" as VRI
+participant "DecorView /\nActivity / View" as Views
+
+group #EFF6FF 階段一：InputReader 讀取與翻譯按鍵（Steps 1–3）
+  Reader -> Reader : EventHub::getEvents() [epoll_wait 喚醒]\nread(device->fd) -> RawEvent
+  Reader -> Reader : processEventsLocked() -> InputDevice::process()\n-> KeyboardInputMapper::processKey() [產出 NotifyKeyArgs]
+  Reader -> Pipe : 釋放 mLock 後 mNextListener.notify(args)
+  Pipe -> Disp : 穿透 7 階段 -> InputDispatcher::notifyKey()\ninterceptKeyBeforeQueueing() -> enqueueInboundEventLocked()\nmLooper->wake()
+end
+
+group #F0FDF4 階段二：InputDispatcher 派發事件（Steps 4–7）
+  Disp -> Disp : dispatchOnceInnerLocked() 取出 KeyEntry\ndispatchKeyLocked() -> doInterceptKeyBeforeDispatchingCommand()
+  Disp -> Disp : findFocusedWindowTargetLocked() [經 mFocusResolver]\n-> dispatchEventLocked() -> prepareDispatchCycleLocked()
+  Disp -> Disp : startDispatchCycleLocked()\ngetSignature() 計算 32B HMAC -> publishKeyEvent()
+  Disp -> Sock : InputChannel::sendMessage()\ngetSanitizedCopy() + ::send(InputMessage::KEY)
+  Disp -> Disp : 移入 waitQueue + mAnrTracker.insert(timeoutTime, token)
+end
+
+group #F3E8FF 階段三：應用進程接收、視圖分派與回報完成（Steps 8–11）
+  Sock -> NIER : 應用主執行緒 Looper 偵測 EPOLLIN\nNativeInputEventReceiver::handleEvent() -> consumeEvents()
+  NIER -> Sock : InputConsumer::consume() -> receiveMessage()\n記錄 mConsumeTimes[seq]，建 KeyEvent
+  NIER -> VRI : dispatchInputEvent(seq, event) [登記 mSeqMap]\n-> WindowInputEventReceiver.onInputEvent() -> deliverInputEvent()
+  VRI -> VRI : 依序經過 NativePreIme -> ViewPreIme -> Ime\n-> EarlyPostIme -> NativePostIme -> ViewPostImeInputStage
+  VRI -> Views : ViewPostImeInputStage.processKeyEvent()\n-> DecorView.dispatchKeyEvent() -> Activity.dispatchKeyEvent()\n-> PhoneWindow.superDispatchKeyEvent() / KeyEvent.dispatch()
+  Views --> VRI : 返回處理結果 (handled)
+  VRI -> NIER : ViewRootImpl.finishInputEvent() -> InputEventReceiver.finishInputEvent()\n-> nativeFinishInputEvent(mReceiverPtr, seq, handled)
+  NIER -> Sock : mOutboundQueue -> processOutboundEvents()\n-> InputConsumer::sendFinishedSignal(InputMessage::FINISHED)
+end
+
+group #FFF7ED 階段四：InputDispatcher 收到完成回執（Step 12）
+  Sock -> Disp : Server socket EPOLLIN -> handleReceiveCallback()\nInputPublisher::receiveConsumerResponse() [Finished / Timeline]
+  Disp -> Disp : finishDispatchCycleLocked() -> doDispatchCycleFinishedCommand()\n移除 waitQueue + mAnrTracker.erase() + LatencyTracker
+  Disp -> Disp : startDispatchCycleLocked() [若 outboundQueue 非空續派下一筆]
+end
+@enduml

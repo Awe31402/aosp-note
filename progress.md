@@ -5,8 +5,8 @@
 
 ## 目前狀態
 
-- **現在**：**第 5、2、4、6、3、7、8、9、10、11、12、13 章皆已全章完成**；第 13 章〈Android 應用程式的消息處理機制〉共 4 節（`13.1`–`13.4`，1,735 行、20 個 Step、30 段程式碼、1,013 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、20 處 `〔與 2.3 差異〕`、5 張 PlantUML 圖表全數編譯並目視檢查通過）。
-- **下一步**：進入第 14 章〈Android 應用程式的鍵盤消息處理機制〉（Input 系統：`InputManagerService`、`InputReader` / `InputDispatcher`、`InputChannel` socketpair、`ViewRootImpl` `WindowInputEventReceiver` 與按鍵事件派發），查證 `android-17.0.0_r1` 原始碼並撰寫 `ch14-input/00-outline.md`。
+- **現在**：**第 5、2、4、6、3、7、8、9、10、11、12、13、14 章皆已全章完成**；第 14 章〈Android 應用程式的鍵盤消息處理機制（Input 系統）〉共 5 節（`14.1`–`14.5`，2,906 行、34 個 Step、73 段程式碼、1,713 行逐行與行號範圍比對驗證 0 筆不符、0 筆 `TODO: 未確認`、34 處 `〔與 2.3 差異〕`、6 張 PlantUML 圖表全數編譯並目視檢查通過）。
+- **下一步**：進入第 15 章〈Android 應用程式線程的消息循環模型〉（主執行緒與與介面無關／相關子執行緒的消息循環模型：`HandlerThread`、`Looper` / `MessageQueue` / `ViewRootImpl` / `Choreographer` 與執行緒親和性），查證 `android-17.0.0_r1` 原始碼並撰寫 `ch15-thread-message-loop/00-outline.md`。
 - **待決事項**：
   - [x] 確認 17 對應的 GKI kernel 分支名稱：已確認為 `kernel/common` 的 `android17-6.18`（`028363aa3cfa` / `1e0de07`）
   - [x] 確認 `ch05-binder/00-outline.md`（檢查點 1 通過）
@@ -32,7 +32,9 @@
   - [x] 完成第 12 章全章 `12.1`–`12.3`
   - [x] 撰寫並確認 `ch13-message-queue/00-outline.md`（第 13 章檢查點 1）
   - [x] 完成第 13 章全章 `13.1`–`13.4`
-  - [ ] 撰寫第 14 章〈Input 系統〉大綱與正文 `ch14-input/`
+  - [x] 確認 `ch14-input/00-outline.md`（第 14 章檢查點 1）
+  - [x] 完成第 14 章全章 `14.1`–`14.5`
+  - [ ] 撰寫第 15 章〈Android 應用程式線程的消息循環模型〉大綱與正文
 
 ## 章節進度
 
@@ -52,7 +54,7 @@
 | 10 | 第 11 章 Zygote 和 System 進程的啟動過程 | Zygote 與 `system_server` 啟動（`init.zygote64.rc` / `ZygoteInit` / `ZygoteServer` / `SystemServer`） | 重追（11.1–11.3 全章完成） | ✅ |
 | 11 | 第 12 章 Android 應用程式進程的啟動過程 | 應用程式進程啟動（`ProcessList` / `ZygoteProcess` / `forkSimpleApps` & USAP / `ActivityThread.main`） | 重追（12.1–12.3 全章完成） | ✅ |
 | 12 | 第 13 章 Android 應用程式的消息處理機制 | 消息處理機制（`Looper` / `CombinedMessageQueue` & DeliQueue / `eventfd` + `epoll` / `Handler`） | 重追（13.1–13.4 全章完成） | ✅ |
-| 13 | 第 14 章 Android 應用程式的鍵盤消息處理機制 | Input 系統 | 重追 | ⬜ |
+| 13 | 第 14 章 Android 應用程式的鍵盤消息處理機制 | Input 系統（`InputManagerService` / `inputflinger` 7 階段管線 / `SOCK_SEQPACKET` / `SurfaceFlinger` 視窗同步 / `InputStage`） | 重追（14.1–14.5 全章完成） | ✅ |
 | 14 | 第 15 章 Android 應用程式線程的消息循環模型 | — | 重追 | ⬜ |
 | 15 | 第 16 章 Android 應用程式的安裝和顯示過程 | — | 重追 | ⬜ |
 | — | 第 1 章 準備知識 | 如何取得 / 閱讀 17 原始碼（一頁） | 環境建置跳過 | ⏭️ |
@@ -107,3 +109,5 @@
 - **2026-11-27**：第 12 章檢查點 2 通過；完成第 12 章剩餘全部小節 `12.2-start-binder-thread-pool.md`、`12.3-create-message-loop.md`；第 12 章全章 3 節（2,036 行、18 個 Step、40 段程式碼、1,208 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、18 處 `〔與 2.3 差異〕`、5 張 PlantUML 圖表全數編譯並目視檢查通過），狀態推進至 ✅ 全章完成。
 - **2026-11-27**：完成第 13 章〈Android 應用程式的消息處理機制〉檢查點 1 大綱 `ch13-message-queue/00-outline.md`（對照原書 p.653–674 與 `platform/frameworks/base` `94b4c163b`、`platform/system/core` `545d248` 驗證 `Android.bp` `messagequeue-gen` 三實作選型、`CombinedMessageQueue` 雙模式〔Legacy + Concurrent `ConcurrentSkipListSet`/`StackNode`〕、`CombinedDeliMessageQueue` 無鎖 DeliQueue、Sync Barrier、`NativeMessageQueue` 64-bit `mPtr` + `RefBase` + `LooperCallback`、`libutils/Looper` `eventfd` + `epoll_create1` + `SequenceNumber` + 零超時跳過 `epoll_wait`、`Message` 併發停用 `sPool`、`Looper.loopOnce` 監控與 `IdleHandler`，規劃為 `13.1`–`13.4` 四節並附完整 2.3 → 17 對照表），等待確認。
 - **2026-11-27**：依使用者指示直接完成第 13 章全章 `13.1-create-message-queue.md`、`13.2-message-loop.md`、`13.3-send-message.md`、`13.4-handle-message-and-idle.md`（共 4 節、1,735 行、20 個 Step、30 段程式碼、1,013 行逐行比對驗證 0 筆不符、0 筆 `TODO: 未確認`、20 處 `〔與 2.3 差異〕`、5 張 PlantUML 圖表全數編譯並目視檢查通過），狀態推進至 ✅ 全章完成。
+- **2026-11-28**：完成第 14 章〈Android 應用程式的鍵盤消息處理機制（Input 系統）〉檢查點 1 大綱 `ch14-input/00-outline.md`（補檢出 `frameworks/base` Input/WM/View 相關目錄，對照原書 p.675–771 與 `platform/frameworks/base` `94b4c163`、`platform/frameworks/native` `ae266dc` 驗證 `InputManagerService`、`NativeInputManagerService`、`InputManager` 7 階段 `InputListener` 管線 + Rust `IInputFlingerRust`、`EventHub` `epoll_create1`/`inotify_init1`/`pipe2`、`InputDispatcher::createInputChannel` 單一 `SOCK_SEQPACKET` socketpair + `BBinder token` + HMAC、`SurfaceFlinger` `WindowInfosListenerInvoker` + `IInputFlinger::setFocusedWindow` / `FocusResolver`、`ViewRootImpl` `WindowInputEventReceiver` + 7 階段 `InputStage` 與「先 Server 後 Client」註銷反轉，規劃為 `14.1`–`14.5` 五節並附完整 2.3 → 17 對照表），等待確認。
+- **2026-11-28**：依使用者指示直接完成第 14 章全章 `14.1-input-model.md`、`14.2-input-manager-startup.md`、`14.3-register-input-channel.md`、`14.4-dispatch-key-event.md`、`14.5-unregister-input-channel.md`（共 5 節、2,906 行、34 個 Step、73 段程式碼、1,713 行逐行與行號範圍比對驗證 0 筆不符、0 筆 `TODO: 未確認`、34 處 `〔與 2.3 差異〕`、6 張 PlantUML 圖表全數編譯並目視檢查通過），狀態推進至 ✅ 全章完成。

@@ -1,0 +1,121 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam classBackgroundColor #FFFFFF
+skinparam classBorderColor #334155
+skinparam classHeaderBackgroundColor #EFF6FF
+skinparam ArrowColor #1E293B
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+class InputManagerService {
+  - mNative : NativeInputManagerService
+  + start()
+  + createInputChannel(name) : InputChannel
+  + removeInputChannel(token)
+}
+
+class NativeInputManager {
+  - mInputManager : sp<InputManagerInterface>
+  - mLooper : sp<Looper>
+  + createInputChannel(name)
+  + removeInputChannel(token)
+  + interceptKeyBeforeQueueing()
+  + interceptKeyBeforeDispatching()
+}
+
+class InputManager {
+  - mReader : unique_ptr<InputReaderInterface>
+  - mBlocker : unique_ptr<UnwantedInteractionBlockerInterface>
+  - mChoreographer : unique_ptr<PointerChoreographerInterface>
+  - mProcessor : unique_ptr<InputProcessorInterface>
+  - mCollector : unique_ptr<InputDeviceMetricsCollectorInterface>
+  - mInputFilter : unique_ptr<InputFilterInterface>
+  - mInteractionReporter : unique_ptr<InteractionReporterInterface>
+  - mDispatcher : unique_ptr<InputDispatcherInterface>
+  - mInputFlingerRust : shared_ptr<IInputFlingerRust>
+  + start() / stop()
+  + setFocusedWindow(FocusRequest)
+}
+
+class InputReader {
+  - mEventHub : shared_ptr<EventHubInterface>
+  - mNextListener : InputListenerInterface&
+  - mThread : unique_ptr<InputThread>
+  + loopOnce()
+  + processEventsLocked()
+}
+
+class EventHub {
+  - mEpollFd : int
+  - mINotifyFd : int
+  - mWakeReadPipeFd / mWakeWritePipeFd : int
+  - mDevices : map<RawDeviceId, unique_ptr<Device>>
+  + getEvents(timeoutMillis) : vector<RawEvent>
+}
+
+class InputDispatcher {
+  - mLooper : sp<Looper>
+  - mThread : unique_ptr<InputThread>
+  - mFocusResolver : FocusResolver
+  - mConnectionManager : ConnectionManager
+  - mAnrTracker : AnrTracker
+  - mInboundQueue : deque<shared_ptr<EventEntry>>
+  + notifyKey(NotifyKeyArgs)
+  + dispatchOnce()
+  + createInputChannel(name)
+  + removeInputChannel(token)
+  + onWindowInfosChanged(WindowInfosUpdate)
+  + setFocusedWindow(FocusRequest)
+}
+
+class Connection {
+  + inputPublisher : InputPublisher
+  + outboundQueue : deque<unique_ptr<DispatchEntry>>
+  + waitQueue : deque<unique_ptr<DispatchEntry>>
+  + status : Status
+}
+
+class InputChannel {
+  - name : string
+  - fd : unique_fd (SOCK_SEQPACKET)
+  - token : sp<IBinder> (BBinder)
+  + openInputChannelPair()
+  + sendMessage(InputMessage*)
+  + receiveMessage() : Result<InputMessage>
+}
+
+class NativeInputEventReceiver {
+  - mInputConsumer : unique_ptr<InputConsumer>
+  - mMessageQueue : sp<MessageQueue>
+  - mOutboundQueue : BlockingQueue<OutboundEvent>
+  + initialize() / dispose()
+  + handleEvent(fd, events, data)
+  + consumeEvents()
+  + finishInputEvent(seq, handled)
+}
+
+class ViewRootImpl {
+  - mInputEventReceiver : WindowInputEventReceiver
+  - mFirstInputStage : InputStage
+  - mFirstPostImeInputStage : InputStage
+  + setView()
+  + enqueueInputEvent()
+  + finishInputEvent()
+  + dispatchDetachedFromWindow()
+}
+
+InputManagerService --> NativeInputManager : JNI mPtr
+NativeInputManager *-- InputManager : mInputManager\n(註冊 inputflinger)
+InputManager *-- InputReader
+InputManager *-- InputDispatcher
+InputReader *-- EventHub
+InputReader ..> InputDispatcher : 經 7 階段 TracedInputListener
+InputDispatcher *-- "0..*" Connection : ConnectionManager
+Connection *-- InputChannel : InputPublisher 持有 Server 端
+InputChannel <..> InputChannel : SOCK_SEQPACKET 雙向通訊\n(共享 BBinder token)
+NativeInputEventReceiver *-- InputChannel : InputConsumer 持有 Client 端
+ViewRootImpl *-- NativeInputEventReceiver : WindowInputEventReceiver (mReceiverPtr)
+@enduml

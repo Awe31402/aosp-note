@@ -1,0 +1,53 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK TC"
+skinparam dpi 150
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 280
+skinparam ParticipantPadding 6
+skinparam ParticipantBackgroundColor #F8FAFC
+skinparam ParticipantBorderColor #334155
+skinparam SequenceLifeLineBorderColor #64748B
+skinparam SequenceArrowColor #1E293B
+skinparam SequenceGroupBorderColor #64748B
+skinparam SequenceGroupHeaderFontColor #0F172A
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #D97706
+
+autonumber
+participant "應用進程\nViewRootImpl" as VRI
+participant "WMS / WindowState\n+ InputMonitor" as WMS
+participant "InputManagerService\n+ NativeInputManager" as IMS
+participant "InputDispatcher\n+ FocusResolver" as Disp
+participant "SurfaceFlinger" as SF
+participant "應用進程\nNativeInputEventReceiver\n+ Looper" as NIER
+
+group #EFF6FF 階段一：建立 InputChannel 與原子註冊 Server 端（Steps 1–3）
+  VRI -> VRI : setView() -> new InputChannel() [空占位]
+  VRI -> WMS : mWindowSession.addToDisplayAsUser(..., inputChannel)
+  WMS -> WMS : WMS.addWindow() -> win.openInputChannel()
+  WMS -> IMS : mInputManager.createInputChannel(name) -> nativeCreateInputChannel()
+  IMS -> Disp : InputDispatcher::createInputChannel(name)
+  Disp -> Disp : InputChannel::openInputChannelPair()\nsocketpair(AF_UNIX, SOCK_SEQPACKET) + 32KiB + BBinder token
+  Disp -> Disp : mConnectionManager.createConnection(serverChannel)\nmLooper->addFd(serverFd, ALOOPER_EVENT_INPUT, handleReceiveCallback)\nmLooper->wake()
+  Disp --> IMS : 返回 Client 端 unique_ptr<InputChannel>
+  IMS --> WMS : 返回 Java InputChannel (Client 端)
+  WMS -> WMS : mInputChannelToken = channel.getToken()\nmInputWindowHandle.setToken(token)\nchannel.copyTo(outInputChannel); channel.dispose()
+  WMS --> VRI : Binder Parcel (InputChannelCore) 傳回 Client FD + token
+end
+
+group #F0FDF4 階段二：視窗拓撲與焦點經 SurfaceFlinger 同步（Steps 4–5）
+  WMS -> WMS : InputMonitor.setInputFocusLw() -> updateInputWindowsLw()\npopulateInputWindowHandle() + setInputWindowInfo()\nmInputTransaction.setFocusedWindow(mInputFocus, name, displayId)
+  WMS -> SF : SurfaceControl.Transaction 提交圖層與焦點命令
+  SF -> Disp : BackgroundExecutor -> WindowInfosListenerInvoker\n-> DispatcherWindowListener::onWindowInfosChanged()\n-> setInputWindowsLocked()
+  SF -> Disp : inputFlinger->setFocusedWindow(focusRequest)\n-> mFocusResolver.setFocusedWindow()\n-> onFocusChangedLocked() [排入 FOCUS 事件]
+end
+
+group #F3E8FF 階段三：註冊 Client 端 InputChannel 與 InputStage 管線（Step 6）
+  VRI -> NIER : new WindowInputEventReceiver(inputChannel, Looper.myLooper())\n-> InputEventReceiver.<init>() -> nativeInit()
+  NIER -> NIER : extractInputChannel() 轉移所有權至 InputConsumer\nNativeInputEventReceiver::initialize()\n-> mMessageQueue->getLooper()->addFd(clientFd, ALOOPER_EVENT_INPUT)
+  NIER --> VRI : 返回 mReceiverPtr (+ 註冊 FrameMetricsObserver)
+  VRI -> VRI : 組裝 7 階段 InputStage 管線\n(NativePreIme -> ViewPreIme -> Ime -> EarlyPostIme\n-> NativePostIme -> ViewPostIme -> Synthetic)
+end
+@enduml
